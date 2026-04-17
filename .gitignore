@@ -20,3 +20,4 @@
 /Exe/*.pdb
 /intermediate/*
 /ipch/ergoactive-a038f5af/*.ipch
+.vs/
