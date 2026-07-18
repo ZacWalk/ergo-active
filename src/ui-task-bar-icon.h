@@ -80,6 +80,7 @@ public:
 		switch (LOWORD(lParam))
 		{
 		case NIN_SELECT:
+		case NIN_BALLOONUSERCLICK:
 			lResult = on_taskbar_dbl_click();
 			return TRUE;
 
