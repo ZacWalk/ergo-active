@@ -61,20 +61,15 @@ public:
 		return result;
 	}
 
-	BOOL is_installed() const
+	BOOL handle_message(const UINT uMsg, const LPARAM lParam, LRESULT& lResult)
 	{
-		return _nid.hWnd != nullptr;
-	}
-
-	BOOL handle_message(const UINT uMsg, const WPARAM wParam, const LPARAM lParam, LRESULT& lResult)
-	{
-		if (uMsg == _taskbar_restart_msg)
+		if (_taskbar_restart_msg != 0 && uMsg == _taskbar_restart_msg)
 		{
 			lResult = add_task_bar_icon();
 			return TRUE;
 		}
 
-		if (uMsg != _nid.uCallbackMessage || HIWORD(lParam) != _nid.uID)
+		if (_nid.uCallbackMessage == 0 || uMsg != _nid.uCallbackMessage || HIWORD(lParam) != _nid.uID)
 			return FALSE;
 
 		switch (LOWORD(lParam))
@@ -92,12 +87,12 @@ public:
 		return FALSE;
 	}
 
-	BOOL show_balloon(const std::wstring& infoTitle, const std::wstring& info, const std::wstring& tip,
-	                  const int timeoutSeconds)
+	// The requested balloon timeout is ignored from Vista onward and the field
+	// aliases uVersion, so it is deliberately left alone here.
+	BOOL show_balloon(const std::wstring& infoTitle, const std::wstring& info, const std::wstring& tip)
 	{
-		_nid.uFlags = NIF_MESSAGE | NIF_TIP | NIF_INFO;
+		_nid.uFlags = NIF_TIP | NIF_SHOWTIP | NIF_INFO;
 		_nid.dwInfoFlags = NIIF_INFO;
-		_nid.uTimeout = timeoutSeconds * 1000;
 
 		StringCchCopyW(_nid.szInfoTitle, ARRAYSIZE(_nid.szInfoTitle), infoTitle.c_str());
 		StringCchCopyW(_nid.szInfo, ARRAYSIZE(_nid.szInfo), info.c_str());
@@ -131,8 +126,11 @@ public:
 
 	void update_tooltip(const std::wstring& tip)
 	{
+		if (_nid.hWnd == nullptr || wcscmp(_nid.szTip, tip.c_str()) == 0)
+			return;
+
 		StringCchCopyW(_nid.szTip, ARRAYSIZE(_nid.szTip), tip.c_str());
-		_nid.uFlags = NIF_TIP;
+		_nid.uFlags = NIF_TIP | NIF_SHOWTIP;
 		Shell_NotifyIconW(NIM_MODIFY, &_nid);
 	}
 
@@ -286,7 +284,7 @@ private:
 	BOOL add_task_bar_icon()
 	{
 		assert(::IsWindow(_nid.hWnd));
-		_nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+		_nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
 		const BOOL result = Shell_NotifyIconW(NIM_ADD, &_nid);
 		if (result)
 		{

@@ -420,9 +420,21 @@ LRESULT main_frame::handle_close()
 
 int WINAPI wWinMain(const HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWSTR /*lpCmdLine*/, const int nCmdShow)
 {
+	// A second instance would fight the first one over the same data files.
+	const HANDLE instanceLock = CreateMutexW(nullptr, TRUE, L"Local\\ergo-active-single-instance");
+	if (instanceLock != nullptr && GetLastError() == ERROR_ALREADY_EXISTS)
+	{
+		PostMessageW(HWND_BROADCAST, main_frame::show_window_message(), 0, 0);
+		CloseHandle(instanceLock);
+		return 0;
+	}
+
 	const HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 	if (FAILED(hr))
 		return 1;
+
+	INITCOMMONCONTROLSEX icc = {sizeof(icc), ICC_BAR_CLASSES | ICC_STANDARD_CLASSES};
+	InitCommonControlsEx(&icc);
 
 	main_frame wndMain;
 	if (wndMain.create(hInstance) == nullptr)
@@ -455,5 +467,12 @@ int WINAPI wWinMain(const HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, PWST
 	}
 
 	CoUninitialize();
+
+	if (instanceLock != nullptr)
+	{
+		ReleaseMutex(instanceLock);
+		CloseHandle(instanceLock);
+	}
+
 	return static_cast<int>(msg.wParam);
 }

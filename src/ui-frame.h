@@ -12,11 +12,30 @@ class main_frame
 public:
 	static constexpr int MinDelay = 20;
 	static constexpr int MaxDelay = 120;
+	static constexpr LPCWSTR AppVersionText = L"ergo-active 1.1";
+
+	static LPCWSTR window_class_name()
+	{
+		return L"ergo-active-main-window";
+	}
+
+	// Broadcast by a second instance to surface the window that is already running.
+	static UINT show_window_message()
+	{
+		static const UINT message = RegisterWindowMessageW(L"ergo-active-show-window");
+		return message;
+	}
 
 	main_frame()
 	{
 		load_delay_setting();
 	}
+
+	// The window stores `this`, so the frame must stay put.
+	main_frame(const main_frame&) = delete;
+	main_frame& operator=(const main_frame&) = delete;
+	main_frame(main_frame&&) = delete;
+	main_frame& operator=(main_frame&&) = delete;
 
 	~main_frame()
 	{
@@ -59,23 +78,17 @@ public:
 		if (msg.message != WM_KEYDOWN)
 			return false;
 
-		if (msg.hwnd != _hwnd && !IsChild(_hwnd, msg.hwnd))
+		if (msg.hwnd != _hwnd && msg.hwnd != _slider)
 			return false;
 
 		switch (static_cast<int>(msg.wParam))
 		{
 		case VK_LEFT:
-			set_slider_pos(std::max(_delay - 1, MinDelay));
-			set_text();
+			set_delay(_delay - 1);
 			return true;
 
 		case VK_RIGHT:
-			set_slider_pos(std::min(_delay + 1, MaxDelay));
-			set_text();
-			return true;
-
-		case VK_F2:
-			test_popup();
+			set_delay(_delay + 1);
 			return true;
 		}
 
@@ -103,6 +116,9 @@ private:
 	POINT _lastMousePos = {};
 	bool _locked = false;
 	int _posture_tip_index = 0;
+	int _ticks_since_flush = 0;
+
+	static constexpr int FlushIntervalTicks = 5 * usage_data::TimerGap;
 
 	static constexpr int IDC_DELAY_SLIDER = 0x1001;
 	static constexpr int IDC_DELAY = 0x1002;
@@ -134,11 +150,6 @@ private:
 		L"\x2728 Check your posture \u2014 sit up straight",
 	};
 
-	static LPCWSTR window_class_name()
-	{
-		return L"ergo-active-main-window";
-	}
-
 	int scale(const int value) const
 	{
 		return ::scale(value, _dpi);
@@ -159,15 +170,59 @@ private:
 			SendMessageW(_edit, WM_SETFONT, reinterpret_cast<WPARAM>(_control_font), TRUE);
 	}
 
-	void update_control_metrics() const
+	// Geometry shared by the layout pass and the painter, so the two cannot drift.
+	struct layout_metrics
 	{
-		if (_edit != nullptr)
-			SetWindowPos(_edit, nullptr, 0, 0, scale(BaseEditWidth), scale(BaseEditHeight),
-			             SWP_NOMOVE | SWP_NOACTIVATE | SWP_NOZORDER);
+		float margin = 0.0f;
+		float content_width = 0.0f;
+		float bar_y = 0.0f;
+		float bar_h = 0.0f;
+		float controls_y = 0.0f;
+		float label_w = 0.0f;
+		RECT slider = {};
+		RECT edit = {};
+	};
 
-		if (_slider != nullptr)
-			SetWindowPos(_slider, nullptr, 0, 0, scale(BaseSliderWidth), scale(BaseSliderHeight),
-			             SWP_NOMOVE | SWP_NOACTIVATE | SWP_NOZORDER);
+	layout_metrics measure(const RECT& client) const
+	{
+		layout_metrics m;
+		m.margin = scale(12.0f);
+		m.content_width = static_cast<float>(client.right - client.left) - m.margin * 2.0f;
+		m.bar_h = scale(32.0f);
+		m.bar_y = static_cast<float>(client.bottom) - m.bar_h - scale(8.0f);
+		m.label_w = scale(130.0f);
+
+		const int sliderW = scale(BaseSliderWidth);
+		const int sliderH = scale(BaseSliderHeight);
+		const int editH = scale(BaseEditHeight);
+
+		m.controls_y = m.bar_y + (m.bar_h - static_cast<float>(sliderH)) / 2.0f;
+
+		const int sliderX = static_cast<int>(static_cast<float>(client.left) + m.margin + m.label_w);
+		const int sliderY = static_cast<int>(m.controls_y);
+		m.slider = {sliderX, sliderY, sliderX + sliderW, sliderY + sliderH};
+
+		const int editX = sliderX + sliderW + scale(4);
+		const int editY = sliderY + (sliderH - editH) / 2;
+		m.edit = {editX, editY, editX + scale(BaseEditWidth), editY + editH};
+		return m;
+	}
+
+	void layout_controls() const
+	{
+		if (_slider == nullptr || _edit == nullptr)
+			return;
+
+		RECT client = {0};
+		GetClientRect(_hwnd, &client);
+		const layout_metrics m = measure(client);
+
+		SetWindowPos(_slider, nullptr, m.slider.left, m.slider.top,
+		             m.slider.right - m.slider.left, m.slider.bottom - m.slider.top,
+		             SWP_NOACTIVATE | SWP_NOZORDER);
+		SetWindowPos(_edit, nullptr, m.edit.left, m.edit.top,
+		             m.edit.right - m.edit.left, m.edit.bottom - m.edit.top,
+		             SWP_NOACTIVATE | SWP_NOZORDER);
 	}
 
 	void update_dpi(UINT dpi, const RECT* suggestedRect = nullptr)
@@ -180,7 +235,7 @@ private:
 			apply_suggested_window_rect(_hwnd, *suggestedRect);
 
 		update_control_font();
-		update_control_metrics();
+		layout_controls();
 		update_background_brush();
 		invalidate_window();
 	}
@@ -213,7 +268,7 @@ private:
 		DWORD size = sizeof(value);
 		if (RegGetValueW(HKEY_CURRENT_USER, RegKeyPath, L"Delay", RRF_RT_REG_DWORD, nullptr, &value, &size) ==
 			ERROR_SUCCESS)
-			_delay = static_cast<int>(value);
+			_delay = std::clamp(static_cast<int>(value), MinDelay, MaxDelay);
 	}
 
 	void save_delay_setting() const
@@ -279,6 +334,13 @@ private:
 		_setting = false;
 	}
 
+	void set_delay(const int minutes)
+	{
+		set_slider_pos(std::clamp(minutes, MinDelay, MaxDelay));
+		set_text();
+		invalidate_window();
+	}
+
 	void poll_input()
 	{
 		LASTINPUTINFO lii{sizeof(LASTINPUTINFO)};
@@ -305,19 +367,35 @@ private:
 
 	void step()
 	{
-		_usage.step(_mouse_activity, _keyboard_activity);
+		// A locked session means the user is away: count it as time off the keyboard
+		// so it can accrue towards a break instead of blocking one.
+		const bool keyboard = !_locked && _keyboard_activity > 0;
+		const bool mouse = !_locked && _mouse_activity > 0;
+
+		const usage_data::step_events events = _usage.step(mouse ? _mouse_activity : 0,
+		                                                   keyboard ? _keyboard_activity : 0);
 		_last_balloon += 1;
-		const bool has_kb = _keyboard_activity > 0;
-		const bool has_mouse = _mouse_activity > 0;
-		_daily.record_tick(has_kb || has_mouse, _usage.get_last_break(), usage_data::TimerGap,
-		                   has_kb, has_mouse, _locked);
+
+		_daily.record_tick({
+			.keyboard = keyboard,
+			.mouse = mouse,
+			.locked = _locked,
+			.stretch_minutes = _usage.get_last_break_minutes(),
+			.break_interval = _delay
+		});
+
+		if (events.break_completed)
+			_daily.record_break();
+		if (events.micro_pause)
+			_daily.record_micro_pause();
+
 		_keyboard_activity = 0;
 		_mouse_activity = 0;
 	}
 
 	int get_last_break_mins() const
 	{
-		return _usage.get_last_break() / usage_data::TimerGap;
+		return _usage.get_last_break_minutes();
 	}
 
 	bool can_show_balloon() const
@@ -338,15 +416,16 @@ private:
 	{
 		const std::wstring message = format_break_message(lastBreakMinutes);
 		const std::wstring tip = std::format(L"{}\n{}", message, get_posture_tip());
-		_ti.show_balloon(L"ergo-active \u2014 Take a Break!", tip, message, 15);
-		_daily.record_break();
+		_ti.show_balloon(L"ergo-active \u2014 Take a Break!", tip, message);
+		_last_balloon = 0;
 	}
 
 	void show_eye_reminder()
 	{
 		_ti.show_balloon(L"ergo-active \u2014 20-20-20 Rule",
 		                 L"Look at something 20 feet away for 20 seconds.\nYour eyes will thank you!",
-		                 L"Eye break reminder", 10);
+		                 L"Eye break reminder");
+		_last_balloon = 0;
 	}
 
 	void draw_stat_card(draw_context& ctx, const rect_f& rect, const LPCWSTR label, const LPCWSTR value,
@@ -375,12 +454,15 @@ private:
 
 	void paint(draw_context& ctx, const RECT& rect)
 	{
+		const layout_metrics lm = measure(rect);
+		const auto& today = _daily.today();
+
 		const float x = static_cast<float>(rect.left);
 		const float y = static_cast<float>(rect.top);
 		const float width = static_cast<float>(rect.right - rect.left);
 		const float height = static_cast<float>(rect.bottom - rect.top);
-		const float margin = scale(12.0f);
-		const float contentWidth = width - margin * 2.0f;
+		const float margin = lm.margin;
+		const float contentWidth = lm.content_width;
 
 		ctx.fill_rect(rect_f(x, y, width, height), BackgroundColor);
 
@@ -389,45 +471,30 @@ private:
 		constexpr COLORREF chartMouseColor = RGB(0xE8, 0x8D, 0x2A); // orange
 		constexpr COLORREF chartBreakColor = RGB(0x4E, 0xC9, 0x6F); // green (= Machine On)
 
-		// --- Bottom bar: slider controls (left) + footer (right) ---
+		// --- Bottom bar: slider label (left), micro-pauses, footer (right) ---
 		constexpr font_spec footerFont(font_spec::FooterSize);
-		const float bottomBarH = scale(32.0f);
-		const float bottomPad = scale(8.0f);
-		const float bottomBarY = y + height - bottomBarH - bottomPad;
+		const float bottomBarY = lm.bar_y;
+		const float controlsH = static_cast<float>(lm.slider.bottom - lm.slider.top);
 
-		constexpr font_spec sliderLabelFont(font_spec::FooterSize);
-		const float sliderLabelW = scale(130.0f);
-		const float controlsCenterY = bottomBarY + (bottomBarH - scale(static_cast<float>(BaseSliderHeight))) / 2.0f;
-
-		rect_f sliderLabel(x + margin, controlsCenterY, sliderLabelW, scale(static_cast<float>(BaseSliderHeight)));
-		ctx.draw_text(L"Break interval (min):", sliderLabelFont, sliderLabel,
+		rect_f sliderLabel(x + margin, lm.controls_y, lm.label_w, controlsH);
+		ctx.draw_text(L"Break interval (min):", footerFont, sliderLabel,
 		              DimTextColor, align_left | align_vcenter);
 
-		const int sliderX = static_cast<int>(x + margin + sliderLabelW);
-		const int sliderY = static_cast<int>(controlsCenterY);
-		MoveWindow(_slider, sliderX, sliderY, scale(BaseSliderWidth), scale(BaseSliderHeight), FALSE);
-
-		const int editX = sliderX + scale(BaseSliderWidth) + scale(4);
-		const int editY = sliderY + (scale(BaseSliderHeight) - scale(BaseEditHeight)) / 2;
-		MoveWindow(_edit, editX, editY, scale(BaseEditWidth), scale(BaseEditHeight), FALSE);
-
-		// Micro-pauses text
 		wchar_t microStr[64] = {};
-		swprintf_s(microStr, L"\u23F8 %d micro-pauses", _usage.get_micro_pauses());
-		constexpr font_spec microFont(font_spec::FooterSize);
-		const float microX = static_cast<float>(editX + scale(BaseEditWidth) + scale(12));
+		swprintf_s(microStr, L"\u23F8 %d micro-pauses", today.micro_pauses);
+		const float microX = static_cast<float>(lm.edit.right + scale(12));
 		const float microW = x + margin + contentWidth * 0.55f - microX;
 		if (microW > 40.0f)
 		{
-			rect_f microRect(microX, controlsCenterY, microW, scale(static_cast<float>(BaseSliderHeight)));
-			ctx.draw_text(microStr, microFont, microRect,
+			rect_f microRect(microX, lm.controls_y, microW, controlsH);
+			ctx.draw_text(microStr, footerFont, microRect,
 			              DimTextColor, align_left | align_vcenter);
 		}
 
 		// Footer text (bottom-right)
 		wchar_t footerBuf[128] = {};
-		swprintf_s(footerBuf, L"ergo-active 1.0 \u2014 Compiled %S", __DATE__);
-		rect_f footerRect(x + margin, bottomBarY, contentWidth, bottomBarH);
+		swprintf_s(footerBuf, L"%s \u2014 built %S", AppVersionText, __DATE__);
+		rect_f footerRect(x + margin, bottomBarY, contentWidth, lm.bar_h);
 		ctx.draw_text(footerBuf, footerFont, footerRect,
 		              blend_color(DimTextColor, BackgroundColor, 0.3f), align_right | align_vcenter);
 
@@ -442,7 +509,6 @@ private:
 		              align_left | align_vcenter);
 
 		// Score badge (vertically centered in title area)
-		const auto& today = _daily.today();
 		COLORREF scoreColor = GreenColor;
 		if (today.score < 50) scoreColor = RedColor;
 		else if (today.score < 75) scoreColor = YellowColor;
@@ -450,7 +516,8 @@ private:
 		wchar_t scoreStr[32] = {};
 		swprintf_s(scoreStr, L"Score: %d", today.score);
 		constexpr font_spec scoreFont{font_spec::LabelSize, true};
-		rect_f scoreRect(x + margin + contentWidth - scale(100.0f), titleY, scale(100.0f), titleBottom - titleY);
+		const float scoreW = static_cast<float>(ctx.measure_text_width(scoreStr, scoreFont)) + scale(2.0f);
+		rect_f scoreRect(x + margin + contentWidth - scoreW, titleY, scoreW, titleBottom - titleY);
 		ctx.draw_text(scoreStr, scoreFont, scoreRect, scoreColor,
 		              align_right | align_vcenter);
 
@@ -496,17 +563,24 @@ private:
 		const float legendRightX = x + margin + contentWidth;
 		const float dotYCenter = legendY + (legendH - dotSize) / 2.0f;
 
-		ctx.fill_rect(rect_f(legendRightX - scale(200.0f), dotYCenter, dotSize, dotSize), chartBreakColor);
-		rect_f breakLegendRect(legendRightX - scale(200.0f) + dotSize + scale(3.0f), legendY, scale(40.0f), legendH);
-		ctx.draw_text(L"Break", labelFont, breakLegendRect, DimTextColor, align_left | align_vcenter);
+		// Laid out right-to-left from measured widths so no label can clip.
+		constexpr LPCWSTR legendLabels[] = {L"Mouse", L"Keyboard", L"Break"};
+		constexpr COLORREF legendColors[] = {chartMouseColor, chartKbColor, chartBreakColor};
+		const float dotGap = scale(3.0f);
+		const float legendItemGap = scale(14.0f);
+		float legendX = legendRightX;
 
-		ctx.fill_rect(rect_f(legendRightX - scale(130.0f), dotYCenter, dotSize, dotSize), chartKbColor);
-		rect_f kbLegendRect(legendRightX - scale(130.0f) + dotSize + scale(3.0f), legendY, scale(50.0f), legendH);
-		ctx.draw_text(L"Keyboard", labelFont, kbLegendRect, DimTextColor, align_left | align_vcenter);
+		for (int i = 0; i < 3; i++)
+		{
+			const float textW = static_cast<float>(ctx.measure_text_width(legendLabels[i], labelFont));
+			legendX -= textW;
+			ctx.draw_text(legendLabels[i], labelFont, rect_f(legendX, legendY, textW, legendH),
+			              DimTextColor, align_left | align_vcenter);
 
-		ctx.fill_rect(rect_f(legendRightX - scale(55.0f), dotYCenter, dotSize, dotSize), chartMouseColor);
-		rect_f mouseLegendRect(legendRightX - scale(55.0f) + dotSize + scale(3.0f), legendY, scale(45.0f), legendH);
-		ctx.draw_text(L"Mouse", labelFont, mouseLegendRect, DimTextColor, align_left | align_vcenter);
+			legendX -= dotGap + dotSize;
+			ctx.fill_rect(rect_f(legendX, dotYCenter, dotSize, dotSize), legendColors[i]);
+			legendX -= legendItemGap;
+		}
 
 		// --- Content area: pie chart (25% width) + graph ---
 		const float contentAreaY = legendY + legendH + scale(4.0f);
@@ -524,7 +598,7 @@ private:
 			rect_f pieOuter(pieX, contentAreaY, pieChartWidth, contentAreaH);
 			ctx.draw_rounded_panel(pieOuter, SurfaceColor);
 
-			const auto& rec = _daily.today();
+			const auto& rec = today;
 			const float kb = static_cast<float>(rec.keyboard_ticks);
 			const float ms = static_cast<float>(rec.mouse_ticks);
 			const float idle = static_cast<float>(rec.idle_ticks);
@@ -567,7 +641,20 @@ private:
 				constexpr LPCWSTR labels[] = {L"Keyboard", L"Mouse", L"Machine On", L"Locked", L"Off"};
 				const float total_segs = kb + ms + idle + locked + off;
 
-				const float legItemW = scale(90.0f);
+				// Format up front so the block can be sized to its widest row.
+				wchar_t rows[5][64] = {};
+				float widestRow = 0.0f;
+				for (int i = 0; i < 5; i++)
+				{
+					const int pct = (total_segs > 0)
+						                ? static_cast<int>(segments[i] / total_segs * 100.0f + 0.5f)
+						                : 0;
+					swprintf_s(rows[i], L"%s %d%%", labels[i], pct);
+					widestRow = std::max(widestRow, static_cast<float>(ctx.measure_text_width(rows[i], pieLabelFont)));
+				}
+
+				const float legTextX = legDotSize + scale(3.0f);
+				const float legItemW = std::min(legTextX + widestRow, pieChartWidth - scale(4.0f));
 				const float legStartX = pieX + (pieChartWidth - legItemW) / 2.0f;
 
 				for (int i = 0; i < 5; i++)
@@ -575,14 +662,8 @@ private:
 					const float dotYC = legY + (legRowH - legDotSize) / 2.0f;
 					ctx.fill_rect(rect_f(legStartX, dotYC, legDotSize, legDotSize), colors[i]);
 
-					const int pct = (total_segs > 0)
-						                ? static_cast<int>(segments[i] / total_segs * 100.0f + 0.5f)
-						                : 0;
-					wchar_t lbl[64] = {};
-					swprintf_s(lbl, L"%s %d%%", labels[i], pct);
-					rect_f lblRect(legStartX + legDotSize + scale(3.0f), legY,
-					               legItemW - legDotSize - scale(3.0f), legRowH);
-					ctx.draw_text(lbl, pieLabelFont, lblRect, DimTextColor,
+					rect_f lblRect(legStartX + legTextX, legY, legItemW - legTextX, legRowH);
+					ctx.draw_text(rows[i], pieLabelFont, lblRect, DimTextColor,
 					              align_left | align_vcenter);
 
 					legY += legRowH + scale(1.0f);
@@ -610,10 +691,11 @@ private:
 	{
 		_dpi = get_window_dpi(_hwnd);
 		center_window(_hwnd, nullptr);
+		apply_dark_titlebar(_hwnd);
 
 		_ti.install(_instance, _hwnd, 1, IDR_MAINFRAME);
 
-		_edit = CreateWindowExW(0, WC_EDITW, L"", WS_CHILD | WS_VISIBLE | ES_RIGHT | WS_TABSTOP, 0, 0,
+		_edit = CreateWindowExW(0, WC_EDITW, L"", WS_CHILD | WS_VISIBLE | ES_RIGHT | ES_NUMBER | WS_TABSTOP, 0, 0,
 		                        scale(BaseEditWidth), scale(BaseEditHeight), _hwnd,
 		                        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(IDC_DELAY)), _instance, nullptr);
 
@@ -624,12 +706,18 @@ private:
 		if (_edit == nullptr || _slider == nullptr)
 			return -1;
 
+		SendMessageW(_edit, EM_SETLIMITTEXT, 3, 0);
 		update_control_font();
-		update_control_metrics();
-		SendMessageW(_slider, TBM_SETBUDDY, TRUE, reinterpret_cast<LPARAM>(_edit));
+		layout_controls();
 		SendMessageW(_slider, TBM_SETRANGE, TRUE, MAKELPARAM(MinDelay, MaxDelay));
 		set_slider_pos(_delay);
 		set_text();
+
+		// Seed the input baseline so the first tick is not counted as a keystroke.
+		LASTINPUTINFO lii{sizeof(LASTINPUTINFO)};
+		if (GetLastInputInfo(&lii))
+			_lastInputTick = lii.dwTime;
+		GetCursorPos(&_lastMousePos);
 
 		if (SetTimer(_hwnd, 1, (1000 * 60) / usage_data::TimerGap, nullptr) == 0)
 			return -1;
@@ -692,27 +780,26 @@ private:
 			return 0;
 
 		case IDC_DELAY:
+			if (_setting)
+				return 0;
+
 			if (notifyCode == EN_CHANGE)
 			{
-				if (_setting)
-					return 0;
-
 				wchar_t text[32] = {0};
 				GetWindowTextW(_edit, text, ARRAYSIZE(text));
-				int position = _wtoi(text);
-				position = std::clamp(position, MinDelay, MaxDelay);
-				set_slider_pos(position);
-				_delay = position;
+				_delay = std::clamp(_wtoi(text), MinDelay, MaxDelay);
+				set_slider_pos(_delay);
+				invalidate_window();
+			}
+			else if (notifyCode == EN_KILLFOCUS)
+			{
+				// Show the value that was actually accepted, not what was typed.
+				set_text();
 			}
 			return 0;
 		}
 
 		return 0;
-	}
-
-	void test_popup()
-	{
-		show_break_balloon(get_last_break_mins());
 	}
 
 	LRESULT handle_close();
@@ -722,43 +809,51 @@ private:
 		poll_input();
 		step();
 
-		// 20-20-20 eye reminder
-		if (_usage.should_show_eye_reminder())
-			show_eye_reminder();
-
-		// Break warning balloon
 		if (can_show_balloon())
 		{
+			// The break warning outranks the eye reminder; never fire both at once.
 			const int lastBreakMinutes = get_last_break_mins();
 			if (lastBreakMinutes > _delay)
-			{
-				_last_balloon = 0;
 				show_break_balloon(lastBreakMinutes);
-			}
+			else if (_usage.should_show_eye_reminder())
+				show_eye_reminder();
 		}
 
 		// Update tray icon color based on urgency
 		_ti.update_urgency(_usage.get_urgency_level(_delay));
 
-		// Update tray tooltip with current status
+		const int overdue = get_last_break_mins() - _delay;
 		wchar_t tip[128] = {};
-		swprintf_s(tip, L"ergo-active \u2014 Next break in %dm | Score: %d",
-		           _usage.get_minutes_until_warning(_delay),
-		           _daily.today().score);
+		if (overdue > 0)
+			swprintf_s(tip, L"ergo-active \u2014 Break overdue by %dm | Score: %d", overdue, _daily.today().score);
+		else
+			swprintf_s(tip, L"ergo-active \u2014 Next break in %dm | Score: %d", -overdue, _daily.today().score);
 		_ti.update_tooltip(tip);
 
-		invalidate_window();
+		// Persist periodically so an unclean shutdown loses minutes, not a day.
+		if (++_ticks_since_flush >= FlushIntervalTicks)
+		{
+			_ticks_since_flush = 0;
+			_usage.flush();
+			_daily.flush();
+		}
+
+		if (IsWindowVisible(_hwnd))
+			invalidate_window();
 		return 0;
 	}
 
 	LRESULT handle_hscroll(const HWND hScroll)
 	{
 		if (hScroll == _slider)
+		{
 			set_text();
+			invalidate_window();
+		}
 		return 0;
 	}
 
-	LRESULT handle_notify(const LPARAM lParam)
+	LRESULT handle_notify(const WPARAM wParam, const LPARAM lParam)
 	{
 		const auto* nmhdr = reinterpret_cast<const NMHDR*>(lParam);
 		if (nmhdr->hwndFrom == _slider && nmhdr->code == NM_CUSTOMDRAW)
@@ -804,7 +899,7 @@ private:
 				break;
 			}
 		}
-		return DefWindowProcW(_hwnd, WM_NOTIFY, 0, lParam);
+		return DefWindowProcW(_hwnd, WM_NOTIFY, wParam, lParam);
 	}
 
 	LRESULT handle_destroy()
@@ -847,8 +942,14 @@ private:
 	LRESULT handle_message(const UINT uMsg, const WPARAM wParam, const LPARAM lParam)
 	{
 		LRESULT trayResult = 0;
-		if (_ti.handle_message(uMsg, wParam, lParam, trayResult))
+		if (_ti.handle_message(uMsg, lParam, trayResult))
 			return trayResult;
+
+		if (uMsg != 0 && uMsg == show_window_message())
+		{
+			restore_and_show(_hwnd);
+			return 0;
+		}
 
 		switch (uMsg)
 		{
@@ -874,7 +975,11 @@ private:
 
 		case WM_SIZE:
 			if (wParam == SIZE_MINIMIZED)
+			{
 				ShowWindow(_hwnd, SW_HIDE);
+				return 0;
+			}
+			layout_controls();
 			invalidate_window();
 			return 0;
 
@@ -902,7 +1007,7 @@ private:
 			return handle_control_color_edit(reinterpret_cast<HDC>(wParam));
 
 		case WM_NOTIFY:
-			return handle_notify(lParam);
+			return handle_notify(wParam, lParam);
 
 		case WM_COMMAND:
 			return handle_command_message(LOWORD(wParam), HIWORD(wParam));

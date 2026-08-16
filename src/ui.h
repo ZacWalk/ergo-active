@@ -53,6 +53,14 @@ inline void enable_non_client_dpi_scaling(const HWND hWnd)
 	EnableNonClientDpiScaling(hWnd);
 }
 
+// Matches the caption to the dark client area. Ignored on builds that predate it.
+inline void apply_dark_titlebar(const HWND hWnd)
+{
+	constexpr DWORD UseImmersiveDarkMode = 20; // DWMWA_USE_IMMERSIVE_DARK_MODE
+	constexpr BOOL dark = TRUE;
+	DwmSetWindowAttribute(hWnd, UseImmersiveDarkMode, &dark, sizeof(dark));
+}
+
 inline HFONT create_message_font(UINT dpi)
 {
 	NONCLIENTMETRICSW metrics = {0};
@@ -236,11 +244,6 @@ private:
 	int _height;
 };
 
-inline int get_dpi_y(const HDC hdc)
-{
-	return hdc != nullptr ? GetDeviceCaps(hdc, LOGPIXELSY) : static_cast<int>(DefaultDpi);
-}
-
 struct rect_f
 {
 	float X = 0.0f;
@@ -252,14 +255,6 @@ struct rect_f
 
 	rect_f(const float x, const float y, const float w, const float h) : X(x), Y(y), Width(w), Height(h)
 	{
-	}
-
-	void inflate(const float dx, const float dy)
-	{
-		X -= dx;
-		Y -= dy;
-		Width += (dx * 2.0f);
-		Height += (dy * 2.0f);
 	}
 
 	RECT to_rect() const
@@ -315,73 +310,6 @@ enum text_align : unsigned
 	align_vcenter = 0x10,
 	align_bottom = 0x20,
 };
-
-inline int measure_text_height(const HDC hdc, const LPCWSTR text, const font_spec& font, const UINT dpi = 0)
-{
-	if (hdc == nullptr || text == nullptr || *text == L'\0')
-		return 0;
-
-	const int dpiY = (dpi != 0) ? static_cast<int>(dpi) : get_dpi_y(hdc);
-	const scoped_delete_object fontHandle(create_font_handle(font, dpiY));
-	scoped_select_object selectFont(hdc, fontHandle.get());
-
-	SIZE sz = {};
-	GetTextExtentPoint32W(hdc, text, static_cast<int>(wcslen(text)), &sz);
-	return sz.cy;
-}
-
-inline void draw_text(const HDC hdc, const LPCWSTR text, const font_spec& font, const rect_f& rect,
-                      const COLORREF color, const unsigned align = align_left, const UINT dpi = 0)
-{
-	if (hdc == nullptr || text == nullptr || *text == L'\0')
-		return;
-
-	const int dpiY = (dpi != 0) ? static_cast<int>(dpi) : get_dpi_y(hdc);
-	const scoped_delete_object fontHandle(create_font_handle(font, dpiY));
-	scoped_select_object selectFont(hdc, fontHandle.get());
-	const int oldBkMode = SetBkMode(hdc, TRANSPARENT);
-	const COLORREF oldColor = SetTextColor(hdc, color);
-
-	const int len = static_cast<int>(wcslen(text));
-	SIZE sz = {};
-	GetTextExtentPoint32W(hdc, text, len, &sz);
-
-	const RECT rc = rect.to_rect();
-	int tx = rc.left;
-	int ty = rc.top;
-
-	if (align & align_hcenter)
-		tx = rc.left + ((rc.right - rc.left) - sz.cx) / 2;
-	else if (align & align_right)
-		tx = rc.right - sz.cx;
-
-	if (align & align_vcenter)
-		ty = rc.top + ((rc.bottom - rc.top) - sz.cy) / 2;
-	else if (align & align_bottom)
-		ty = rc.bottom - sz.cy;
-
-	ExtTextOutW(hdc, tx, ty, ETO_CLIPPED, &rc, text, static_cast<UINT>(len), nullptr);
-
-	SetTextColor(hdc, oldColor);
-	SetBkMode(hdc, oldBkMode);
-}
-
-inline void fill_rect(const HDC hdc, const rect_f& rect, const COLORREF color)
-{
-	const RECT rc = rect.to_rect();
-	const scoped_delete_object brushHandle(CreateSolidBrush(color));
-	FillRect(hdc, &rc, static_cast<HBRUSH>(brushHandle.get()));
-}
-
-inline void draw_rect(const HDC hdc, const rect_f& rect, const COLORREF color)
-{
-	const scoped_delete_object penHandle(CreatePen(PS_SOLID, 1, color));
-	scoped_select_object selectPen(hdc, penHandle.get());
-	scoped_select_object selectBrush(hdc, GetStockObject(NULL_BRUSH));
-
-	const RECT rc = rect.to_rect();
-	Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom);
-}
 
 class draw_context
 {
@@ -466,6 +394,18 @@ public:
 		SIZE sz = {};
 		GetTextExtentPoint32W(_hdc, text, static_cast<int>(wcslen(text)), &sz);
 		return sz.cy;
+	}
+
+	int measure_text_width(const LPCWSTR text, const font_spec& font)
+	{
+		if (_hdc == nullptr || text == nullptr || *text == L'\0')
+			return 0;
+
+		SelectObject(_hdc, get_or_create_font(font));
+
+		SIZE sz = {};
+		GetTextExtentPoint32W(_hdc, text, static_cast<int>(wcslen(text)), &sz);
+		return sz.cx;
 	}
 
 	void fill_rect(const rect_f& rect, const COLORREF color)
