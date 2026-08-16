@@ -31,12 +31,15 @@
 #include <windows.h>
 #include <windowsx.h>
 #include <commctrl.h>
+#include <dwmapi.h>
 #include <shellapi.h>
 #include <strsafe.h>
 #include <tchar.h>
 #include <wtsapi32.h>
 #include <shlobj.h>
 
+#pragma comment(lib, "comctl32.lib")
+#pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "Wtsapi32.lib")
 
 #include <algorithm>
