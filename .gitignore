@@ -21,3 +21,8 @@
 /intermediate/*
 /ipch/ergoactive-a038f5af/*.ipch
 .vs/
+
+# CMake / Ninja build output
+build/
+exe/
+intermediate/
