@@ -1,0 +1,15 @@
+{
+  "mapping": {
+    "test": "debug",
+    "build": "debug",
+    "configure": "debug"
+  },
+  "multiConfig": false,
+  "generator": "Ninja",
+  "files": {
+    "C:\\code\\apps\\ergo-active\\CMakePresets.json": "0481D9FF83B50D33D851DCB28EB79E0B61AC7FFC9B4A301C15D07B0615EC353E"
+  },
+  "root": "C:\\code\\apps\\ergo-active",
+  "manifestHash": "C20D3E1B4BD8390367ABAE7B12029E1511F2EF1D112FD6CE1D4AAE20C5BB7433",
+  "directory": "C:\\code\\apps\\ergo-active\\build\\debug"
+}
