@@ -26,3 +26,4 @@
 build/
 exe/
 intermediate/
+/.dd/state/
