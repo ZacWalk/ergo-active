@@ -17,6 +17,8 @@ enable_language(RC)
 add_executable(ergo-active WIN32
     src/main.cpp
     src/ergo-active.rc
+    # The linker embeds this manifest; the .rc must not embed it as well.
+    src/res/ergo-active.exe.manifest
 )
 
 target_sources(ergo-active PRIVATE
@@ -33,11 +35,9 @@ target_include_directories(ergo-active PRIVATE src)
 target_compile_definitions(ergo-active PRIVATE WIN32 _WINDOWS STRICT UNICODE _UNICODE)
 target_compile_options(ergo-active PRIVATE /W3 /MP)
 
-# The .rc embeds res/ergo-active.exe.manifest, so CMake must not add its own.
 set_target_properties(ergo-active PROPERTIES
     OUTPUT_NAME ergo-active-64
     DEBUG_POSTFIX d
-    LINK_FLAGS "/MANIFEST:NO"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/exe"
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_SOURCE_DIR}/exe"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_SOURCE_DIR}/exe"
@@ -49,4 +49,8 @@ if(BUILD_TESTING)
     target_compile_features(ergo_active_tests PRIVATE cxx_std_20)
     add_test(NAME ergo_active_unit COMMAND ergo_active_tests)
     set_tests_properties(ergo_active_unit PROPERTIES TIMEOUT 30 LABELS ergo-active)
+
+    add_test(NAME ergo_active_manifest COMMAND "${CMAKE_COMMAND}"
+        "-DEXE=$<TARGET_FILE:ergo-active>" -P "${PROJECT_SOURCE_DIR}/tests/manifest.cmake")
+    set_tests_properties(ergo_active_manifest PROPERTIES TIMEOUT 30 LABELS ergo-active)
 endif()

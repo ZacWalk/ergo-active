@@ -156,7 +156,7 @@ END
 #endif    // English (U.S.) resources
 /////////////////////////////////////////////////////////////////////////////
 
-// The application manifest is embedded by the MSBuild manifest tool
-// (see AdditionalManifestFiles in ergo-active.vcxproj), not from here.
+// The application manifest is embedded by the linker from the copy listed as a
+// source in CMakeLists.txt, not from here.
 
 
