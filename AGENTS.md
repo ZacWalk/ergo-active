@@ -1,12 +1,12 @@
 # ergo-active – Copilot Workspace Overview
 
-ergo-active is a native Win32 C++ desktop application that monitors keyboard and mouse activity and reminds the user to take regular breaks. It is a single Visual Studio project built from `ergo-active.sln`.
+ergo-active is a native Win32 C++ desktop application that monitors keyboard and mouse activity and reminds the user to take regular breaks. It is a single executable, built with CMake and Ninja through the vendored dd driver.
 
 ## Project
 
 | Project | Output | Purpose |
 |---------|--------|---------|
-| `src/ergo-active.vcxproj` | `ergo-active-{32\|64}[d].exe` | Main GUI application |
+| `CMakeLists.txt` | `exe/ergo-active-64[d].exe` | Main GUI application |
 
 Input activity is detected via the Win32 `GetLastInputInfo` API — no hook DLL or driver is required.
 
@@ -27,18 +27,18 @@ Files follow a naming convention: `data-*` for data/logic, `ui-*` for presentati
 - **win.h** – Common header; sets up Unicode, Win32 target version macros, includes Windows & C++ standard library headers, links `comctl32`, `dwmapi`, `Wtsapi32`.
 - **resource.h** – Resource identifier constants.
 - **ergo-active.rc** – Resource script (icon, tray menu, exit dialog, version info, string table). All resources live in a single U.S. English language block.
-- **res/ergo-active.exe.manifest** – Application manifest enabling PerMonitorV2 DPI awareness, common controls v6, long paths and UTF-8. It is embedded by the MSBuild manifest tool via `AdditionalManifestFiles`; do **not** also embed it from the `.rc` (that produces `CVT1100: duplicate resource`).
+- **res/ergo-active.exe.manifest** – Application manifest enabling PerMonitorV2 DPI awareness, common controls v6, long paths and UTF-8. `CMakeLists.txt` lists it as a source, so the linker embeds it. Do **not** also embed it from the `.rc` (that produces `CVT1100: duplicate resource`), and do not link with `/MANIFEST:NO`, which drops it entirely — the first CMake build did exactly that, leaving the app DPI-unaware and on version 5 common controls, and nothing failed.
 
 ## Build
 
-- Solution: `ergo-active.sln` (Visual Studio / MSBuild).
-- Platform toolset: **v145**; C++ standard: **C++20**; warning level **/W4**, and the tree is warning-clean — keep it that way.
-- Configurations: `Debug|Release` × `Win32|x64`.
-- Default task: **Build Debug x64** — runs MSBuild with `Debug|x64`.
-- `dd.ps1` is the dev driver: `.\dd.ps1 run` builds Release x64 and launches it, `.\dd.ps1 build` builds only (`-Configuration`/`-Platform` to override). It kills any running `ergo-active-*` first — the linker cannot overwrite a running exe, and the single-instance mutex is shared across build flavours, so a stray Debug copy would swallow the new launch.
-- Outputs land in `Exe/`.
-- Prefer `/t:Rebuild` when verifying resource or manifest changes; `/t:Build` can hide resource-linking errors.
-- CI (`.github/workflows/build.yml`) builds all four configurations from a clean checkout, so anything that only reproduces on a full build will break it.
+- Built with CMake and Ninja through the vendored dd driver (`dd.ps1`, PowerShell 7.4+), which sets up the MSVC environment itself.
+- C++ standard: **C++20**; CMake compiles at `/W3`, and the tree is warning-clean — keep it that way.
+- Configurations: Debug and Release, x64 only.
+- `.\dd.ps1 build` builds both; `.\dd.ps1 launch` builds Release and starts it; `.\dd.ps1 test --label ergo-active` builds both and runs CTest, which is a build smoke check only — verify behaviour by running the app.
+- Close any running `ergo-active-*` before building — the linker cannot overwrite a running exe, and the single-instance mutex is shared across build flavours, so a stray Debug copy would swallow the new launch.
+- Outputs land in `exe/` as `ergo-active-64.exe` and `ergo-active-64d.exe`.
+- Verify resource or manifest changes from a clean build (`.\dd.ps1 clean --yes`, then build); an incremental build can hide resource-linking errors.
+- CI (`.github/workflows/build.yml`) runs `dd.ps1 test` — both configurations plus a window smoke check — from a clean checkout, so anything that only reproduces on a full build will break it.
 
 ## Conventions
 
