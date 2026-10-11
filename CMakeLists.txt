@@ -50,6 +50,14 @@ if(BUILD_TESTING)
     add_test(NAME ergo_active_unit COMMAND ergo_active_tests)
     set_tests_properties(ergo_active_unit PROPERTIES TIMEOUT 30 LABELS ergo-active)
 
+    add_executable(ergo_active_usage_tests tests/usage.cpp)
+    target_compile_features(ergo_active_usage_tests PRIVATE cxx_std_20)
+    target_include_directories(ergo_active_usage_tests PRIVATE src)
+    target_compile_definitions(ergo_active_usage_tests PRIVATE UNICODE _UNICODE)
+    target_compile_options(ergo_active_usage_tests PRIVATE /W3)
+    add_test(NAME ergo_active_usage COMMAND ergo_active_usage_tests)
+    set_tests_properties(ergo_active_usage PROPERTIES TIMEOUT 30 LABELS ergo-active)
+
     add_test(NAME ergo_active_manifest COMMAND "${CMAKE_COMMAND}"
         "-DEXE=$<TARGET_FILE:ergo-active>" -P "${PROJECT_SOURCE_DIR}/tests/manifest.cmake")
     set_tests_properties(ergo_active_manifest PROPERTIES TIMEOUT 30 LABELS ergo-active)
