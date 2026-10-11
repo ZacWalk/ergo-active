@@ -21,6 +21,9 @@
             'debug-path' = 'exe/ergo-active-64d{exe}'
             'release-path' = 'exe/ergo-active-64{exe}'
             platforms = @('x64-windows')
+            # Closing the window asks whether to hide to the tray or exit, so the
+            # smoke test checks that the window comes up rather than that it closes.
+            smoke = 'start'
         }
     )
 }
