@@ -26,7 +26,8 @@ Only uses about 2mb of ram and almost no CPU.
   day into keyboard, mouse, machine-on, locked and off time. Per-monitor DPI aware.
 - **Daily history** — up to 30 days of per-day statistics in
   `%APPDATA%\ergo-active\history.csv`, flushed every five minutes and at
-  shutdown. The rolling window survives restarts. The score is measured against
+  shutdown. The rolling window survives restarts, and time the app was closed
+  or the machine asleep counts as time away. The score is measured against
   *your* configured interval, rewarding regular breaks and penalising long
   unbroken stretches.
 - **System tray** — dynamic colour-coded icon, live tooltip, single-instance

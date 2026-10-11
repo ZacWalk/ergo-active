@@ -215,7 +215,11 @@ void draw_context::draw_usage_graph(const rect_f& rect,
 		if (mins >= 60 && (mins % 60) == 0)
 			label = std::format(L"{}h", mins / 60);
 
-		rect_f labelRect(static_cast<float>(xPos - 14), gB - 22.0f, 28.0f, 14.0f);
+		// Sized from the text: a fixed 28x14 box clips the glyphs at any scale above 100%.
+		const float labelW = static_cast<float>(measure_text_width(label.c_str(), axisFont));
+		const float labelH = static_cast<float>(measure_text_height(label.c_str(), axisFont));
+		const rect_f labelRect(static_cast<float>(xPos) - labelW / 2.0f, gB - scale(4.0f) - labelH,
+			labelW + 1.0f, labelH);
 		draw_text(label.c_str(), axisFont, labelRect, axisColor,
 			align_hcenter);
 	}

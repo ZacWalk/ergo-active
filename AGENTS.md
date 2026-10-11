@@ -20,7 +20,7 @@ Files follow a naming convention: `data-*` for data/logic, `ui-*` for presentati
 ### UI layer (`ui-*`)
 - **ui.h** – GDI drawing helpers and RAII wrappers: `scoped_delete_object`, `scoped_select_object`, `buffered_paint_surface`, `rect_f`, `font_spec`, color blending, DPI helpers, dark caption support, and `draw_context` (a GDI-object-caching drawing surface). All drawing goes through `draw_context`.
 - **ui-frame.h** – `main_frame` class; owns the dark-themed dashboard UI with stat cards, activity graph, usage pie chart, delay slider, tray icon with color-coded urgency, break/eye-strain reminders, posture tips, and daily history integration.
-- **ui-task-bar-icon.h** – `task_bar_icon` class; tray icon management with dynamic color-coded urgency icons (green/yellow/red), context menu, balloon tips, tooltip updates, and `TaskbarCreated` restart recovery.
+- **ui-task-bar-icon.h** – `task_bar_icon` class; tray icon management with dynamic color-coded urgency icons (green/yellow/red), context menu (opened at the `NOTIFYICON_VERSION_4` anchor in `wParam`, so Shift+F10 on the icon works), mouse and keyboard selection (`NIN_SELECT`, `NIN_KEYSELECT`), balloon tips, tooltip updates, and `TaskbarCreated` restart recovery.
 
 ### Infrastructure
 - **main.cpp** – `wWinMain` entry point: single-instance guard, common-controls init, message loop. Also holds the exit/hide dialog procedure and the out-of-line `draw_context::draw_usage_graph` / `draw_context::draw_pie_chart` renderers.
@@ -34,7 +34,7 @@ Files follow a naming convention: `data-*` for data/logic, `ui-*` for presentati
 - Built with CMake and Ninja through the vendored dd driver (`dd.ps1`, PowerShell 7.4+), which sets up the MSVC environment itself.
 - C++ standard: **C++20**; CMake compiles at `/W3`, and the tree is warning-clean — keep it that way.
 - Configurations: Debug and Release, x64 only.
-- `.\dd.ps1 build` builds both; `.\dd.ps1 launch` builds Release and starts it; `.\dd.ps1 test --label ergo-active` builds both and runs CTest, which is a build smoke check only — verify behaviour by running the app.
+- `.\dd.ps1 build` builds both; `.\dd.ps1 launch` builds Release and starts it; `.\dd.ps1 test --label ergo-active` builds both and runs CTest: the rolling-window checks in `tests/usage.cpp` (which build `usage_data` transient, so they never touch the real `usage.dat`), the manifest check and a link smoke test. No test opens the dashboard — verify the UI by running the app.
 - Close any running `ergo-active-*` before building — the linker cannot overwrite a running exe, and the single-instance mutex is shared across build flavours, so a stray Debug copy would swallow the new launch.
 - Outputs land in `exe/` as `ergo-active-64.exe` and `ergo-active-64d.exe`.
 - Verify resource or manifest changes from a clean build (`.\dd.ps1 clean --yes`, then build); an incremental build can hide resource-linking errors.
@@ -51,6 +51,8 @@ Files follow a naming convention: `data-*` for data/logic, `ui-*` for presentati
 - A locked session counts as time away from the keyboard, so it accrues toward a break.
 - Breaks and micro-pauses are detected by `usage_data::step()` and reported to `daily_stats` via its returned `step_events` — never inferred from a notification being shown.
 - Usage data is flushed every 5 minutes as well as on exit and `WM_ENDSESSION`.
+- Time the timer never saw is time away: `usage_data::age()` steps the window over it as idle ticks, from `load()` with the age of `usage.dat` and from the timer when a tick arrives whole periods late (the machine slept). So a restart or a sleep of three minutes or more is a break, and old activity keeps its true place on the graph. `age()` reports the break so it is counted in BREAKS, unless the gap began on an earlier day (`same_local_day`, `daily_stats::is_current_day()`).
+- The frame is not a dialog, so it does a dialog's keyboard work itself: Tab/Shift+Tab in `pre_translate_message`, and saving the focused control on `WM_ACTIVATE` to give it back on reactivation.
 - 20-20-20 eye reminder fires every 20 minutes of continuous activity, and yields to an overdue break warning.
 - Tray icon dynamically changes color: green (OK) → yellow (approaching limit) → red (overdue). `NIF_SHOWTIP` is required alongside `NOTIFYICON_VERSION_4` or the tooltip is suppressed.
 - Only one instance runs; a second launch broadcasts `main_frame::show_window_message()` and exits. (`FindWindow` by class name is not reliable across processes here — use the broadcast.)

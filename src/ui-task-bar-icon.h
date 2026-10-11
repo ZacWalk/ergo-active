@@ -61,7 +61,7 @@ public:
 		return result;
 	}
 
-	BOOL handle_message(const UINT uMsg, const LPARAM lParam, LRESULT& lResult)
+	BOOL handle_message(const UINT uMsg, const WPARAM wParam, const LPARAM lParam, LRESULT& lResult)
 	{
 		if (_taskbar_restart_msg != 0 && uMsg == _taskbar_restart_msg)
 		{
@@ -75,12 +75,15 @@ public:
 		switch (LOWORD(lParam))
 		{
 		case NIN_SELECT:
+		case NIN_KEYSELECT: // Enter or Space on the icon, reached from the keyboard
 		case NIN_BALLOONUSERCLICK:
 			lResult = on_taskbar_dbl_click();
 			return TRUE;
 
 		case WM_CONTEXTMENU:
-			lResult = on_taskbar_context_menu();
+			// NOTIFYICON_VERSION_4 passes the anchor in wParam: the click for the mouse, the icon
+			// for Shift+F10 or the menu key, where the mouse pointer may be anywhere.
+			lResult = on_taskbar_context_menu(POINT{GET_X_LPARAM(wParam), GET_Y_LPARAM(wParam)});
 			return TRUE;
 		}
 
@@ -305,7 +308,7 @@ private:
 		return 0;
 	}
 
-	LRESULT on_taskbar_context_menu()
+	LRESULT on_taskbar_context_menu(const POINT anchor)
 	{
 		if (!IsMenu(_menu))
 			return 0;
@@ -316,10 +319,8 @@ private:
 
 		SetMenuDefaultItem(hSubMenu, 0, TRUE);
 
-		POINT pt = {0, 0};
-		GetCursorPos(&pt);
 		SetForegroundWindow(_nid.hWnd);
-		TrackPopupMenu(hSubMenu, 0, pt.x, pt.y, 0, _nid.hWnd, nullptr);
+		TrackPopupMenu(hSubMenu, 0, anchor.x, anchor.y, 0, _nid.hWnd, nullptr);
 		PostMessageW(_nid.hWnd, WM_NULL, 0, 0);
 		return 0;
 	}

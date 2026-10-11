@@ -108,18 +108,18 @@ END
 // Dialog
 //
 
-IDD_EXIT DIALOGEX 0, 0, 196, 62
+IDD_EXIT DIALOGEX 0, 0, 216, 62
 STYLE DS_SHELLFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "ergo-active"
 FONT 9, "Segoe UI", 400, 0, 0x1
 BEGIN
-    DEFPUSHBUTTON   "Hide",IDOK,139,7,50,14
-    PUSHBUTTON      "Cancel",IDCANCEL,139,24,50,14
-    PUSHBUTTON      "Exit",ID_EXIT,139,41,50,14
-    LTEXT           "Do you want to Hide or Exit?",IDC_STATIC,34,7,92,8
+    DEFPUSHBUTTON   "Hide",IDOK,159,7,50,14
+    PUSHBUTTON      "Cancel",IDCANCEL,159,24,50,14
+    PUSHBUTTON      "Exit",ID_EXIT,159,41,50,14
+    LTEXT           "Do you want to Hide or Exit?",IDC_STATIC,34,7,118,8
     ICON            IDR_MAINFRAME,IDC_STATIC,7,7,21,20
     LTEXT           "When hidden, ergo-active will monitor activity and remind you to take breaks.",
-                    IDC_STATIC,32,22,99,31
+                    IDC_STATIC,32,22,120,31
 END
 
 
@@ -134,7 +134,7 @@ BEGIN
     IDD_EXIT, DIALOG
     BEGIN
         LEFTMARGIN, 7
-        RIGHTMARGIN, 189
+        RIGHTMARGIN, 209
         TOPMARGIN, 7
         BOTTOMMARGIN, 55
     END

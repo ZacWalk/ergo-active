@@ -78,6 +78,34 @@ public:
 		if (msg.message != WM_KEYDOWN)
 			return false;
 
+		// There is no dialog manager here, so Tab between the controls is done by hand.
+		if (msg.wParam == VK_TAB && (msg.hwnd == _hwnd || IsChild(_hwnd, msg.hwnd)))
+		{
+			const HWND focus = GetFocus();
+			const bool backwards = GetKeyState(VK_SHIFT) < 0;
+			HWND next = nullptr;
+			if (focus == _hwnd || focus == nullptr)
+			{
+				// From the frame itself Tab enters at the first control and Shift+Tab at the
+				// last; GetNextDlgTabItem finds no previous item without a starting control.
+				next = GetNextDlgTabItem(_hwnd, nullptr, FALSE);
+				if (backwards && next != nullptr)
+					next = GetNextDlgTabItem(_hwnd, next, TRUE);
+			}
+			else
+			{
+				next = GetNextDlgTabItem(_hwnd, focus, backwards);
+			}
+
+			if (next != nullptr)
+			{
+				SetFocus(next);
+				if (SendMessageW(next, WM_GETDLGCODE, 0, 0) & DLGC_HASSETSEL)
+					SendMessageW(next, EM_SETSEL, 0, -1);
+			}
+			return true;
+		}
+
 		if (msg.hwnd != _hwnd && msg.hwnd != _slider)
 			return false;
 
@@ -103,6 +131,7 @@ private:
 	HWND _hwnd = nullptr;
 	HWND _edit = nullptr;
 	HWND _slider = nullptr;
+	HWND _focus_on_deactivate = nullptr;
 	HBRUSH _brush_background = nullptr;
 	HBRUSH _brush_edit = nullptr;
 	HFONT _control_font = nullptr;
@@ -117,7 +146,9 @@ private:
 	bool _locked = false;
 	int _posture_tip_index = 0;
 	int _ticks_since_flush = 0;
+	ULONGLONG _last_timer_tick = 0;
 
+	static constexpr UINT TimerPeriodMs = (1000 * 60) / usage_data::TimerGap;
 	static constexpr int FlushIntervalTicks = 5 * usage_data::TimerGap;
 
 	static constexpr int IDC_DELAY_SLIDER = 0x1001;
@@ -296,6 +327,14 @@ private:
 	void set_slider_pos(const int pos)
 	{
 		SendMessageW(_slider, TBM_SETPOS, TRUE, pos);
+		invalidate_slider();
+	}
+
+	// The custom-drawn channel fills up to the thumb, but the trackbar only repaints the old
+	// and new thumb rectangles when the position changes, which leaves the fill stale.
+	void invalidate_slider() const
+	{
+		InvalidateRect(_slider, nullptr, FALSE);
 	}
 
 	void update_background_brush()
@@ -480,11 +519,14 @@ private:
 		ctx.draw_text(L"Break interval (min):", footerFont, sliderLabel,
 		              DimTextColor, align_left | align_vcenter);
 
+		// The count and the version footer share the bar, so both are sized from their measured
+		// widths. When there is not room for the two, the count wins and the footer is dropped.
 		wchar_t microStr[64] = {};
-		swprintf_s(microStr, L"\u23F8 %d micro-pauses", today.micro_pauses);
+		swprintf_s(microStr, L"\u23F8 %d micro-pause%ls", today.micro_pauses, today.micro_pauses == 1 ? L"" : L"s");
 		const float microX = static_cast<float>(lm.edit.right + scale(12));
-		const float microW = x + margin + contentWidth * 0.55f - microX;
-		if (microW > 40.0f)
+		const float microW = static_cast<float>(ctx.measure_text_width(microStr, footerFont)) + scale(2.0f);
+		const float rightEdge = x + margin + contentWidth;
+		if (microX + microW <= rightEdge)
 		{
 			rect_f microRect(microX, lm.controls_y, microW, controlsH);
 			ctx.draw_text(microStr, footerFont, microRect,
@@ -494,9 +536,13 @@ private:
 		// Footer text (bottom-right)
 		wchar_t footerBuf[128] = {};
 		swprintf_s(footerBuf, L"%s \u2014 built %S", AppVersionText, __DATE__);
-		rect_f footerRect(x + margin, bottomBarY, contentWidth, lm.bar_h);
-		ctx.draw_text(footerBuf, footerFont, footerRect,
-		              blend_color(DimTextColor, BackgroundColor, 0.3f), align_right | align_vcenter);
+		const float footerW = static_cast<float>(ctx.measure_text_width(footerBuf, footerFont)) + scale(2.0f);
+		if (rightEdge - footerW >= microX + microW + scale(12.0f))
+		{
+			rect_f footerRect(rightEdge - footerW, bottomBarY, footerW, lm.bar_h);
+			ctx.draw_text(footerBuf, footerFont, footerRect,
+			              blend_color(DimTextColor, BackgroundColor, 0.3f), align_right | align_vcenter);
+		}
 
 		// --- Title bar area (vertically centered) ---
 		constexpr font_spec titleFont(font_spec::TitleSize, true);
@@ -695,13 +741,14 @@ private:
 
 		_ti.install(_instance, _hwnd, 1, IDR_MAINFRAME);
 
-		_edit = CreateWindowExW(0, WC_EDITW, L"", WS_CHILD | WS_VISIBLE | ES_RIGHT | ES_NUMBER | WS_TABSTOP, 0, 0,
-		                        scale(BaseEditWidth), scale(BaseEditHeight), _hwnd,
-		                        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(IDC_DELAY)), _instance, nullptr);
-
+		// Created left to right, which is also the Tab order.
 		_slider = CreateWindowExW(0, TRACKBAR_CLASSW, nullptr, WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, 0,
 		                          scale(BaseSliderWidth), scale(BaseSliderHeight), _hwnd,
 		                          reinterpret_cast<HMENU>(static_cast<UINT_PTR>(IDC_DELAY_SLIDER)), _instance, nullptr);
+
+		_edit = CreateWindowExW(0, WC_EDITW, L"", WS_CHILD | WS_VISIBLE | ES_RIGHT | ES_NUMBER | WS_TABSTOP, 0, 0,
+		                        scale(BaseEditWidth), scale(BaseEditHeight), _hwnd,
+		                        reinterpret_cast<HMENU>(static_cast<UINT_PTR>(IDC_DELAY)), _instance, nullptr);
 
 		if (_edit == nullptr || _slider == nullptr)
 			return -1;
@@ -719,8 +766,11 @@ private:
 			_lastInputTick = lii.dwTime;
 		GetCursorPos(&_lastMousePos);
 
-		if (SetTimer(_hwnd, 1, (1000 * 60) / usage_data::TimerGap, nullptr) == 0)
+		if (SetTimer(_hwnd, 1, TimerPeriodMs, nullptr) == 0)
 			return -1;
+		_last_timer_tick = GetTickCount64();
+		if (_usage.take_break_while_closed())
+			_daily.record_break();
 		update_background_brush();
 		WTSRegisterSessionNotification(_hwnd, NOTIFY_FOR_THIS_SESSION);
 		return 0;
@@ -806,6 +856,20 @@ private:
 
 	LRESULT handle_timer()
 	{
+		// The timer does not fire while the machine sleeps, and that time was spent away from
+		// the keyboard. A tick that arrives whole periods late brings the missed ones in as idle.
+		const ULONGLONG now = GetTickCount64();
+		const ULONGLONG periods = (now - _last_timer_tick) / TimerPeriodMs;
+		_last_timer_tick = now;
+		if (periods >= 2)
+		{
+			// A break the gap completed counts like any other, unless midnight passed in the
+			// gap: then it belongs to a day that is already over.
+			const bool was_current_day = _daily.is_current_day();
+			if (_usage.age(static_cast<int64_t>(periods) - 1).break_completed && was_current_day)
+				_daily.record_break();
+		}
+
 		poll_input();
 		step();
 
@@ -848,6 +912,7 @@ private:
 		if (hScroll == _slider)
 		{
 			set_text();
+			invalidate_slider();
 			invalidate_window();
 		}
 		return 0;
@@ -942,7 +1007,7 @@ private:
 	LRESULT handle_message(const UINT uMsg, const WPARAM wParam, const LPARAM lParam)
 	{
 		LRESULT trayResult = 0;
-		if (_ti.handle_message(uMsg, lParam, trayResult))
+		if (_ti.handle_message(uMsg, wParam, lParam, trayResult))
 			return trayResult;
 
 		if (uMsg != 0 && uMsg == show_window_message())
@@ -972,6 +1037,28 @@ private:
 
 		case WM_ERASEBKGND:
 			return 1;
+
+		case WM_ACTIVATE:
+			// As a dialog does, give focus back to the control that had it. DefWindowProc puts
+			// it on the frame instead, which loses the user's place and commits a half-typed
+			// delay - after every switch to another window, including the exit dialog.
+			if (LOWORD(wParam) == WA_INACTIVE)
+			{
+				const HWND focus = GetFocus();
+				_focus_on_deactivate = focus != nullptr && IsChild(_hwnd, focus) ? focus : nullptr;
+			}
+			else if (HIWORD(wParam) == 0 && _focus_on_deactivate != nullptr && IsWindow(_focus_on_deactivate))
+			{
+				SetFocus(_focus_on_deactivate);
+				return 0;
+			}
+			break;
+
+		case WM_LBUTTONDOWN:
+			// A click on the dashboard takes focus from the delay edit, which commits what was
+			// typed there; without it the edit keeps showing a value that was clamped.
+			SetFocus(_hwnd);
+			return 0;
 
 		case WM_SIZE:
 			if (wParam == SIZE_MINIMIZED)
