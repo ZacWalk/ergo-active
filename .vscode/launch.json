@@ -1,0 +1,15 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Launch ErgoActive Debug",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/Exe/ergoactive64d.exe",
+      "args": [],
+      "cwd": "${workspaceFolder}/Exe",
+      "console": "integratedTerminal",
+      "preLaunchTask": "Build Debug x64"
+    }
+  ]
+}
