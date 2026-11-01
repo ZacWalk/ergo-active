@@ -1,4 +1,10 @@
 {
   "schema": 1,
-  "dependencies": {}
+  "dependencies": {
+    "libdesktop": {
+      "url": "https://github.com/ZacWalk/libdesktop.git",
+      "commit": "31aae322af6e0696a9597726705b1121bd31580b",
+      "method": "application"
+    }
+  }
 }

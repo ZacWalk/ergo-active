@@ -2,55 +2,66 @@
 
 [![Build](https://github.com/ZacWalk/ergo-active/actions/workflows/build.yml/badge.svg)](https://github.com/ZacWalk/ergo-active/actions/workflows/build.yml)
 
-A native Win32 C++ desktop application that monitors keyboard and mouse activity
-and reminds you to take regular breaks. It runs in the system tray, tracks input
-over a rolling window, detects idle breaks, and notifies you when you have been
-working too long without a rest.
+ergo-active is a small Windows x64 break reminder. It monitors keyboard and
+mouse activity, keeps a rolling activity window, runs from the system tray, and
+reminds you to take regular breaks.
 
-Only uses about 2mb of ram and almost no CPU.
-
-![ergo-active dashboard](screen-shot.png)
+The dashboard is a `libdesktop` `pf::frame_reactor`: the shared core owns the
+window, message loop, GDI drawing surface, DPI events, focus events, timers and
+menus. Shared system services own the tray, registry settings and atomic file
+publication. The app keeps its custom dashboard presentation (stat cards,
+four-hour activity graph, usage pie chart, delay slider and numeric editor)
+rather than reducing it to generic widgets.
 
 ## Features
 
-- **Activity monitoring** — tracks keyboard and mouse activity in real time via
-  `GetLastInputInfo`, with no hooks or drivers. Counts ~20-second micro-pauses as
-  well as full 3-minute breaks, and treats a locked session as time away.
-- **Break reminders** — a configurable 20–120 minute interval, with the tray icon
-  shifting green → yellow → red as you approach and exceed it. Balloon
-  notifications carry rotating posture tips. The 20-20-20 eye-strain rule yields
-  to an overdue break warning so the two never collide.
-- **Dashboard** — a dark-themed window with stat cards for active time, next
-  break countdown, breaks taken, longest stretch and a daily ergonomic score.
-  A four-hour activity graph splits keyboard from mouse; a pie chart breaks the
-  day into keyboard, mouse, machine-on, locked and off time. Per-monitor DPI aware.
-- **Daily history** — up to 30 days of per-day statistics in
-  `%APPDATA%\ergo-active\history.csv`, flushed every five minutes and at
-  shutdown. The rolling window survives restarts, and time the app was closed
-  or the machine asleep counts as time away. The score is measured against
-  *your* configured interval, rewarding regular breaks and penalising long
-  unbroken stretches.
-- **System tray** — dynamic colour-coded icon, live tooltip, single-instance
-  behaviour, and automatic recovery if Explorer restarts.
+- **Activity monitoring** — samples `GetLastInputInfo` every ten seconds
+  without hooks or drivers. A locked session counts as time away.
+- **Break reminders** — configurable 20–120 minute interval, green/yellow/red
+  tray urgency, rotating posture tips and the 20-20-20 eye rule. Overdue break
+  warnings always win over the eye reminder.
+- **Dashboard** — dark stat cards, keyboard/mouse/break activity graph, daily
+  usage pie chart, DPI-aware slider and numeric editor with keyboard focus.
+- **Daily history** — up to 30 days in
+  `%APPDATA%\ergo-active\history.csv`; the rolling window survives restarts in
+  `%APPDATA%\ergo-active\usage.dat`. Missed timer periods, application gaps
+  and sleep age as time away.
+- **System tray** — dynamic urgency icons, live tooltip, balloon tips,
+  keyboard-selection/context-menu anchor, `TaskbarCreated` recovery and
+  single-instance show behavior.
+- **Persistence diagnostics** — failed history/usage publication and tray
+  publication are returned through testable seams and logged by the app instead
+  of being silently discarded.
 
 ## Building
 
-Requires Windows x64 and Visual Studio with the Desktop C++ workload. The tree is
-warning-clean at `/W4`. The vendored [dd](https://github.com/ZacWalk/dd) runtime
-locates Visual Studio and uses the CMake and Ninja that ship with it.
+Requires Windows x64 and Visual Studio with the Desktop C++ workload. The
+vendored [dd](https://github.com/ZacWalk/dd) runtime locates Visual Studio,
+CMake and Ninja.
 
 ```powershell
-.\dd.ps1 build        # both configurations
-.\dd.ps1 test         # build and run the suite
-.\dd.ps1 launch       # build Release, then start the app
+$env:CMAKE_BUILD_PARALLEL_LEVEL = 2
+.\dd.ps1 build                    # Debug and Release
+.\dd.ps1 test --label ergo-active # headless tests only
 ```
 
-Binaries are written to `exe\ergo-active-64.exe`, with a `d` suffix for Debug.
+The app records the published libdesktop revision
+`31aae322af6e0696a9597726705b1121bd31580b` in
+`cmake/dd-dependencies.json`. A sibling `..\libdesktop` checkout is used for
+local development; a fresh checkout fetches the pin. The executable is
+`exe\ergo-active-64.exe` (Debug adds `d`).
 
-## Documentation
-
-[AGENTS.md](AGENTS.md) — conventions for contributors and coding agents.
+The four labelled tests per configuration cover the smoke target, rolling
+window/history persistence and failure reporting, headless dashboard
+layout/input/event/reminder policy including the shared edit reactor and
+service teardown, shared tray publication failure, and the generated
+PerMonitorV2 manifest. The model suite reports 32 assertions and the
+dashboard/reactor suite reports 38 assertions per configuration. They do not
+open the visible dashboard or attach to a running user instance.
 
 ## License
 
-[CC0 1.0 Universal](LICENSE) — public domain.
+[CC0 1.0 Universal](LICENSE) — public domain. The executable statically links
+the LGPL-2.1-or-later [libdesktop](https://github.com/ZacWalk/libdesktop)
+platform layer; its source and the pinned recipe remain available so users can
+relink against a modified library.

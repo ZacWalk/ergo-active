@@ -1,13 +1,63 @@
-// data.h - Activity model and persistence.
+// data.h - Platform-neutral activity model and persistence contract.
 //
-// daily_stats persists per-day usage statistics to %APPDATA%\ergo-active\history.csv.
-// usage_data holds the rolling activity window backing the dashboard graph and
-// drives break / micro-pause detection.
+// The model owns the rolling activity window and the daily statistics.  The
+// application supplies the small storage seam below; Windows file and clock
+// details stay in the app-native backend, not in this model or in the UI.
 
 #pragma once
 
+#include <algorithm>
+#include <array>
+#include <charconv>
+#include <cwchar>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <ctime>
+#include <iterator>
+#include <limits>
+#include <sstream>
+#include <span>
+#include <string>
+#include <string_view>
+#include <vector>
+
 // Input is sampled on a timer; this many samples make one minute.
 inline constexpr int TicksPerMinute = 6;
+
+struct activity_store_result
+{
+	bool success = true;
+	std::string diagnostic;
+
+	explicit operator bool() const { return success; }
+};
+
+struct activity_store_read_result
+{
+	bool success = true;
+	bool not_found = false;
+	std::string diagnostic;
+
+	explicit operator bool() const { return success; }
+};
+
+struct activity_store
+{
+	virtual ~activity_store() = default;
+
+	virtual activity_store_read_result read_text(std::string_view name, std::string& value) const = 0;
+	virtual activity_store_result write_text_atomic(std::string_view name,
+	                                                std::string_view value) const = 0;
+	virtual activity_store_read_result read_binary(std::string_view name,
+	                                               std::vector<uint8_t>& value) const = 0;
+	virtual activity_store_result write_binary_atomic(std::string_view name,
+	                                                  std::span<const uint8_t> value) const = 0;
+
+	// Seconds since the file was written.  Missing or unreadable files return
+	// zero, which makes a restart with no prior state behave like a fresh run.
+	virtual int64_t seconds_since_written(std::string_view name) const = 0;
+};
 
 struct daily_record
 {
@@ -37,10 +87,12 @@ class daily_stats
 public:
 	static constexpr int MaxHistory = 30;
 
-	daily_stats()
+	daily_stats() { ensure_today(); }
+
+	explicit daily_stats(activity_store* store) : _store(store)
 	{
-		resolve_path();
-		load();
+		if (_store != nullptr)
+			load();
 		ensure_today();
 	}
 
@@ -111,9 +163,14 @@ public:
 		_records.back().micro_pauses++;
 	}
 
-	void flush()
+	bool flush()
 	{
-		save();
+		return save();
+	}
+
+	[[nodiscard]] const std::string& last_storage_error() const
+	{
+		return _last_storage_error;
 	}
 
 	const daily_record& today() const
@@ -127,7 +184,7 @@ public:
 	{
 		wchar_t today_str[16] = {};
 		get_today_string(today_str, 16);
-		return !_records.empty() && wcscmp(_records.back().date, today_str) == 0;
+		return !_records.empty() && std::wcscmp(_records.back().date, today_str) == 0;
 	}
 
 	const std::vector<daily_record>& history() const
@@ -157,17 +214,49 @@ public:
 	// non-ASCII date - fails the whole save, which would stop history being kept at all.
 	static bool parse_record(const char* line, daily_record& r)
 	{
-		char date_buf[16] = {};
-		// Files written before micro_pauses was added have 9 fields; accept those too.
-		const int fields = sscanf_s(line, "%15[^,],%d,%d,%d,%d,%d,%d,%d,%d,%d",
-		                            date_buf, static_cast<unsigned>(sizeof(date_buf)),
-		                            &r.active_minutes, &r.break_count, &r.longest_stretch, &r.score,
-		                            &r.keyboard_ticks, &r.mouse_ticks, &r.idle_ticks, &r.locked_ticks,
-		                            &r.micro_pauses);
-		if (fields < 9 || !is_iso_date(date_buf))
+		std::array<std::string_view, 10> fields = {};
+		const std::string_view input(line);
+		size_t start = 0;
+		size_t field_count = 0;
+		while (field_count < fields.size())
+		{
+			const size_t comma = input.find(',', start);
+			fields[field_count++] = input.substr(start,
+				comma == std::string_view::npos ? input.size() - start : comma - start);
+			if (comma == std::string_view::npos)
+				break;
+			start = comma + 1;
+		}
+
+		if (field_count < 9 || fields[0].size() >= 16)
 			return false;
 
-		for (int i = 0; i < 15 && date_buf[i]; i++)
+		char date_buf[16] = {};
+		std::memcpy(date_buf, fields[0].data(), fields[0].size());
+		if (!is_iso_date(date_buf))
+			return false;
+
+		const auto parse_int = [](std::string_view text, int& value)
+		{
+			while (!text.empty() && (text.back() == '\r' || text.back() == '\n'))
+				text.remove_suffix(1);
+			if (text.empty())
+				return false;
+			const auto result = std::from_chars(text.data(), text.data() + text.size(), value);
+			return result.ec == std::errc{} && result.ptr == text.data() + text.size();
+		};
+
+		int* values[] = {
+			&r.active_minutes, &r.break_count, &r.longest_stretch, &r.score,
+			&r.keyboard_ticks, &r.mouse_ticks, &r.idle_ticks, &r.locked_ticks,
+		};
+		for (size_t i = 0; i < 8; ++i)
+			if (!parse_int(fields[i + 1], *values[i]))
+				return false;
+		if (field_count >= 10 && !parse_int(fields[9], r.micro_pauses))
+			return false;
+
+		for (size_t i = 0; i < fields[0].size(); ++i)
 			r.date[i] = static_cast<wchar_t>(date_buf[i]);
 		return true;
 	}
@@ -184,32 +273,28 @@ public:
 	}
 
 private:
+	activity_store* _store = nullptr;
 	std::vector<daily_record> _records;
-	wchar_t _csv_path[MAX_PATH] = {};
 	int _tick_accumulator = 0;
 	int _break_interval = 0;
+	mutable std::string _last_storage_error;
 
-	void resolve_path()
+	static std::tm local_time(const time_t value)
 	{
-		wchar_t appdata[MAX_PATH] = {};
-		if (FAILED(SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, appdata)))
-			return;
-
-		wchar_t dir_path[MAX_PATH] = {};
-		swprintf_s(dir_path, L"%s\\ergo-active", appdata);
-
-		if (!CreateDirectoryW(dir_path, nullptr) && GetLastError() != ERROR_ALREADY_EXISTS)
-			return;
-
-		swprintf_s(_csv_path, L"%s\\ergo-active\\history.csv", appdata);
+		std::tm result = {};
+#if defined(_MSC_VER)
+		::localtime_s(&result, &value);
+#else
+		if (const auto* const local = std::localtime(&value))
+			result = *local;
+#endif
+		return result;
 	}
 
 	static void get_today_string(wchar_t* buf, const size_t len)
 	{
-		const time_t now = time(nullptr);
-		tm lt = {};
-		localtime_s(&lt, &now);
-		swprintf_s(buf, len, L"%04d-%02d-%02d", lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday);
+		const auto lt = local_time(std::time(nullptr));
+		std::swprintf(buf, len, L"%04d-%02d-%02d", lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday);
 	}
 
 	void trim_old_records()
@@ -223,10 +308,10 @@ private:
 		wchar_t today_str[16] = {};
 		get_today_string(today_str, 16);
 
-		if (_records.empty() || wcscmp(_records.back().date, today_str) != 0)
+		if (_records.empty() || std::wcscmp(_records.back().date, today_str) != 0)
 		{
 			daily_record r = {};
-			wcscpy_s(r.date, today_str);
+			std::copy(std::begin(today_str), std::end(today_str), std::begin(r.date));
 			// Scored now, not at the first tick: the dashboard shows the score as soon as it
 			// opens, and an unscored day would read as a red 0 until then.
 			r.score = compute_score(r, _break_interval);
@@ -237,68 +322,82 @@ private:
 
 	void load()
 	{
-		if (_csv_path[0] == L'\0')
+		if (_store == nullptr)
 			return;
 
-		FILE* f = nullptr;
-		if (_wfopen_s(&f, _csv_path, L"r") != 0 || f == nullptr)
-			return;
-
-		char line[256] = {};
-		// Skip header
-		if (fgets(line, sizeof(line), f) == nullptr)
+		std::string contents;
+		const auto result = _store->read_text("history.csv", contents);
+		if (!result)
 		{
-			fclose(f);
+			if (!result.not_found)
+				_last_storage_error = result.diagnostic;
 			return;
 		}
 
-		while (fgets(line, sizeof(line), f) != nullptr)
+		size_t line_start = 0;
+		bool first = true;
+		while (line_start <= contents.size())
 		{
-			daily_record r = {};
-			if (parse_record(line, r))
-				_records.push_back(r);
+			const size_t line_end = contents.find('\n', line_start);
+			const size_t count = line_end == std::string::npos ? contents.size() - line_start
+			                                                     : line_end - line_start;
+			if (!first && count > 0)
+			{
+				std::string line = contents.substr(line_start, count);
+				daily_record r = {};
+				if (parse_record(line.c_str(), r))
+					_records.push_back(r);
+			}
+			first = false;
+			if (line_end == std::string::npos)
+				break;
+			line_start = line_end + 1;
 		}
 
-		fclose(f);
 		trim_old_records();
 	}
 
-	void save() const
+	bool save() const
 	{
-		if (_csv_path[0] == L'\0')
-			return;
+		if (_store == nullptr)
+			return true;
 
-		// Write to a temporary file first, then atomically rename
-		wchar_t tmp_path[MAX_PATH] = {};
-		swprintf_s(tmp_path, L"%s.tmp", _csv_path);
-
-		FILE* f = nullptr;
-		if (_wfopen_s(&f, tmp_path, L"w") != 0 || f == nullptr)
-			return;
-
-		bool ok = fprintf(
-			f,
-			"date,active_minutes,break_count,longest_stretch,score,keyboard_ticks,mouse_ticks,idle_ticks,locked_ticks,micro_pauses\n")
-			> 0;
+		std::ostringstream out;
+		out << "date,active_minutes,break_count,longest_stretch,score,keyboard_ticks,mouse_ticks,"
+		       "idle_ticks,locked_ticks,micro_pauses\n";
 
 		for (const auto& r : _records)
 		{
-			if (!ok) break;
-			ok = fprintf(f, "%ls,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
-			             r.date, r.active_minutes, r.break_count, r.longest_stretch, r.score,
-			             r.keyboard_ticks, r.mouse_ticks, r.idle_ticks, r.locked_ticks, r.micro_pauses) > 0;
+			std::string date;
+			for (const wchar_t c : r.date)
+			{
+				if (c == L'\0')
+					break;
+				if (c > 0x7f)
+				{
+					_last_storage_error = "history.csv contains a non-ASCII date";
+					return false;
+				}
+				date += static_cast<char>(c);
+			}
+
+			out << date << ',' << r.active_minutes << ',' << r.break_count << ','
+			    << r.longest_stretch << ',' << r.score << ',' << r.keyboard_ticks << ','
+			    << r.mouse_ticks << ',' << r.idle_ticks << ',' << r.locked_ticks << ','
+			    << r.micro_pauses << '\n';
+			if (!out)
+			{
+				_last_storage_error = "could not format history.csv";
+				return false;
+			}
 		}
 
-		fclose(f);
-
-		if (ok)
-			MoveFileExW(tmp_path, _csv_path, MOVEFILE_REPLACE_EXISTING);
-		else
-			DeleteFileW(tmp_path);
+		const auto csv = out.str();
+		const auto result = _store->write_text_atomic("history.csv", csv);
+		_last_storage_error = result.success ? std::string{} : result.diagnostic;
+		return result.success;
 	}
 };
-
-
 
 struct usage_tick
 {
@@ -321,10 +420,12 @@ public:
 		bool micro_pause = false;
 	};
 
-	usage_data()
+	usage_data() = default;
+
+	explicit usage_data(activity_store* store) : _store(store)
 	{
-		resolve_path();
-		load();
+		if (_store != nullptr)
+			load();
 	}
 
 	// Neither loads nor saves, so tests cannot touch the user's usage file.
@@ -385,13 +486,13 @@ public:
 	}
 
 	// Advances the window over time in which the timer never fired - the app closed, the
-	// machine asleep - as idle ticks, which is what that time was. Without it a restart or a
-	// sleep resumes the old stretch as if no time had passed, and the graph shows hours-old
+	// machine asleep - as idle ticks, which is what that time was. Without it a restart or
+	// a sleep resumes the old stretch as if no time had passed, and the graph shows hours-old
 	// activity as the last few minutes.
 	//
 	// Reports a break when the gap completes one, as step() would have tick by tick, so it can
-	// be counted. Micro-pauses are left to the ticks the timer sees: a short gap is usually the
-	// app being restarted, not a pause in the work.
+	// be counted. Micro-pauses are left to the ticks the timer sees: a short gap is usually
+	// the app being restarted, not a pause in the work.
 	step_events age(const int64_t ticks)
 	{
 		step_events events;
@@ -432,10 +533,8 @@ public:
 
 	static bool same_local_day(const time_t a, const time_t b)
 	{
-		tm la = {};
-		tm lb = {};
-		localtime_s(&la, &a);
-		localtime_s(&lb, &b);
+		const auto la = local_time(a);
+		const auto lb = local_time(b);
 		return la.tm_year == lb.tm_year && la.tm_yday == lb.tm_yday;
 	}
 
@@ -474,122 +573,107 @@ public:
 		return (_last_break % TwentyMinutes) == 0 && is_active();
 	}
 
-	void flush()
+	bool flush()
 	{
-		save();
+		return save();
+	}
+
+	[[nodiscard]] const std::string& last_storage_error() const
+	{
+		return _last_storage_error;
 	}
 
 private:
 	static constexpr uint32_t FileVersion = 2;
+	static constexpr int SecondsPerTick = 60 / TimerGap;
 
+	activity_store* _store = nullptr;
 	usage_tick _uses[MaxUses]{};
 	uint8_t _break_markers[MaxUses]{};
 	int _last_break = 0;
 	int _now_break = 0;
 	bool _break_while_closed = false;
-	wchar_t _dat_path[MAX_PATH] = {};
+	mutable std::string _last_storage_error;
 
-	void resolve_path()
+	static std::tm local_time(const time_t value)
 	{
-		wchar_t appdata[MAX_PATH] = {};
-		if (FAILED(SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, appdata)))
-			return;
-
-		wchar_t dir_path[MAX_PATH] = {};
-		swprintf_s(dir_path, L"%s\\ergo-active", appdata);
-		CreateDirectoryW(dir_path, nullptr);
-
-		swprintf_s(_dat_path, L"%s\\ergo-active\\usage.dat", appdata);
+		std::tm result = {};
+#if defined(_MSC_VER)
+		::localtime_s(&result, &value);
+#else
+		if (const auto* const local = std::localtime(&value))
+			result = *local;
+#endif
+		return result;
 	}
 
-	void save() const
+	bool save() const
 	{
-		if (_dat_path[0] == L'\0')
-			return;
+		if (_store == nullptr)
+			return true;
 
-		wchar_t tmp_path[MAX_PATH] = {};
-		swprintf_s(tmp_path, L"%s.tmp", _dat_path);
+		std::vector<uint8_t> bytes;
+		bytes.reserve(sizeof(FileVersion) + sizeof(_uses) + sizeof(_break_markers) +
+		              sizeof(_last_break) + sizeof(_now_break));
 
-		FILE* f = nullptr;
-		if (_wfopen_s(&f, tmp_path, L"wb") != 0 || f == nullptr)
-			return;
+		const auto append = [&bytes](const void* data, const size_t size)
+		{
+			const auto old_size = bytes.size();
+			bytes.resize(old_size + size);
+			std::memcpy(bytes.data() + old_size, data, size);
+		};
 
-		bool ok = true;
 		const uint32_t ver = FileVersion;
-		ok = ok && fwrite(&ver, sizeof(ver), 1, f) == 1;
-		ok = ok && fwrite(_uses, sizeof(_uses), 1, f) == 1;
-		ok = ok && fwrite(_break_markers, sizeof(_break_markers), 1, f) == 1;
-		ok = ok && fwrite(&_last_break, sizeof(_last_break), 1, f) == 1;
-		ok = ok && fwrite(&_now_break, sizeof(_now_break), 1, f) == 1;
-
-		fclose(f);
-
-		if (ok)
-			MoveFileExW(tmp_path, _dat_path, MOVEFILE_REPLACE_EXISTING);
-		else
-			DeleteFileW(tmp_path);
+		append(&ver, sizeof(ver));
+		append(_uses, sizeof(_uses));
+		append(_break_markers, sizeof(_break_markers));
+		append(&_last_break, sizeof(_last_break));
+		append(&_now_break, sizeof(_now_break));
+		const auto result = _store->write_binary_atomic("usage.dat", bytes);
+		_last_storage_error = result.success ? std::string{} : result.diagnostic;
+		return result.success;
 	}
 
 	void load()
 	{
-		if (_dat_path[0] == L'\0')
+		if (_store == nullptr)
 			return;
 
-		FILE* f = nullptr;
-		if (_wfopen_s(&f, _dat_path, L"rb") != 0 || f == nullptr)
-			return;
-
-		uint32_t ver = 0;
-		if (fread(&ver, sizeof(ver), 1, f) != 1 || ver != FileVersion)
+		std::vector<uint8_t> bytes;
+		const auto result = _store->read_binary("usage.dat", bytes);
+		if (!result)
 		{
-			fclose(f);
+			if (!result.not_found)
+				_last_storage_error = result.diagnostic;
 			return;
 		}
 
-		bool ok = true;
-		ok = ok && fread(_uses, sizeof(_uses), 1, f) == 1;
-		ok = ok && fread(_break_markers, sizeof(_break_markers), 1, f) == 1;
-		ok = ok && fread(&_last_break, sizeof(_last_break), 1, f) == 1;
-		ok = ok && fread(&_now_break, sizeof(_now_break), 1, f) == 1;
-
-		fclose(f);
-
-		if (!ok)
-		{
-			// Reset to clean state on partial read
-			memset(_uses, 0, sizeof(_uses));
-			memset(_break_markers, 0, sizeof(_break_markers));
-			_last_break = 0;
-			_now_break = 0;
+		const size_t expected = sizeof(FileVersion) + sizeof(_uses) + sizeof(_break_markers) +
+		                        sizeof(_last_break) + sizeof(_now_break);
+		if (bytes.size() < expected)
 			return;
-		}
 
-		// The file was last written when the previous run stopped stepping.
-		const int64_t away = seconds_since_written(_dat_path);
-		const step_events gap = age(away / SecondsPerTick);
-		const time_t now = time(nullptr);
-		_break_while_closed = gap.break_completed && same_local_day(now - static_cast<time_t>(away), now);
-	}
-
-	static constexpr int SecondsPerTick = 60 / TimerGap;
-
-	static int64_t seconds_since_written(const wchar_t* path)
-	{
-		WIN32_FILE_ATTRIBUTE_DATA attributes = {};
-		if (!GetFileAttributesExW(path, GetFileExInfoStandard, &attributes))
-			return 0;
-
-		FILETIME now = {};
-		GetSystemTimeAsFileTime(&now);
-
-		const auto to_ticks = [](const FILETIME& time)
+		size_t offset = 0;
+		const auto read = [&bytes, &offset](void* data, const size_t size)
 		{
-			return (static_cast<uint64_t>(time.dwHighDateTime) << 32) | time.dwLowDateTime;
+			std::memcpy(data, bytes.data() + offset, size);
+			offset += size;
 		};
 
-		const uint64_t written = to_ticks(attributes.ftLastWriteTime);
-		const uint64_t current = to_ticks(now);
-		constexpr uint64_t FileTimePerSecond = 10'000'000;
-		return current > written ? static_cast<int64_t>((current - written) / FileTimePerSecond) : 0;
+		uint32_t ver = 0;
+		read(&ver, sizeof(ver));
+		if (ver != FileVersion)
+			return;
+
+		read(_uses, sizeof(_uses));
+		read(_break_markers, sizeof(_break_markers));
+		read(&_last_break, sizeof(_last_break));
+		read(&_now_break, sizeof(_now_break));
+
+		const int64_t away = std::max<int64_t>(0, _store->seconds_since_written("usage.dat"));
+		const step_events gap = age(away / SecondsPerTick);
+		const time_t now = std::time(nullptr);
+		_break_while_closed = gap.break_completed &&
+			same_local_day(now - static_cast<time_t>(away), now);
 	}
 };

@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(ergo-active LANGUAGES CXX VERSION 1.0.0)
+project(ergo-active LANGUAGES CXX VERSION 1.1.0)
 
 if(NOT WIN32)
-    message(FATAL_ERROR "ergo-active is a Win32 SDK application and only builds on Windows.")
+    message(FATAL_ERROR "ergo-active is a Win32 desktop application and only builds on Windows.")
 endif()
 if(NOT MSVC)
     message(FATAL_ERROR "ergo-active requires MSVC; no other toolchain is supported.")
@@ -12,31 +12,51 @@ if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "ergo-active is 64-bit only; configure with an x64 toolchain.")
 endif()
 
-enable_language(RC)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /EHsc")
+set(LIBDESKTOP_SYSTEM ON)
 
-add_executable(ergo-active WIN32
-    src/main.cpp
-    src/ergo-active.rc
-    # The linker embeds this manifest; the .rc must not embed it as well.
-    src/res/ergo-active.exe.manifest
+# The application and the static LGPL platform layer use the same CRT.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+# Develop against a sibling checkout when one exists; a fresh checkout fetches
+# the published revision recorded in cmake/dd-dependencies.json.
+if(NOT DEFINED FETCHCONTENT_SOURCE_DIR_LIBDESKTOP
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../libdesktop/CMakeLists.txt")
+    set(FETCHCONTENT_SOURCE_DIR_LIBDESKTOP "${CMAKE_CURRENT_SOURCE_DIR}/../libdesktop"
+        CACHE PATH "Local libdesktop checkout to build against")
+endif()
+
+include(FetchContent)
+FetchContent_Declare(libdesktop
+    GIT_REPOSITORY https://github.com/ZacWalk/libdesktop.git
+    GIT_TAG        31aae322af6e0696a9597726705b1121bd31580b
+)
+FetchContent_MakeAvailable(libdesktop)
+
+platform_add_app(ergo-active UI
+    SOURCES
+        src/main.cpp
+        src/app-services.h
+        src/data.h
+        src/dashboard-layout.h
+        src/dashboard-policy.h
+        src/desktop-services.h
+        src/ui-frame.h
+        src/win-services.h
+    ICON        src/res/ergo-active.ico
+    DESCRIPTION "ergo-active break reminder"
+    VERSION     1.1.0.0
+    OUTPUT_NAME ergo-active-64
 )
 
-target_sources(ergo-active PRIVATE
-    src/data.h
-    src/resource.h
-    src/ui-frame.h
-    src/ui-task-bar-icon.h
-    src/ui.h
-    src/win.h
-)
-
-target_compile_features(ergo-active PRIVATE cxx_std_20)
 target_include_directories(ergo-active PRIVATE src)
-target_compile_definitions(ergo-active PRIVATE WIN32 _WINDOWS STRICT UNICODE _UNICODE)
-target_compile_options(ergo-active PRIVATE /W3 /MP)
+target_link_libraries(ergo-active PRIVATE libdesktop::system)
+target_compile_options(ergo-active PRIVATE /W3 /MP /EHsc /utf-8)
 
 set_target_properties(ergo-active PROPERTIES
-    OUTPUT_NAME ergo-active-64
     DEBUG_POSTFIX d
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/exe"
     RUNTIME_OUTPUT_DIRECTORY_DEBUG "${CMAKE_SOURCE_DIR}/exe"
@@ -53,10 +73,18 @@ if(BUILD_TESTING)
     add_executable(ergo_active_usage_tests tests/usage.cpp)
     target_compile_features(ergo_active_usage_tests PRIVATE cxx_std_20)
     target_include_directories(ergo_active_usage_tests PRIVATE src)
-    target_compile_definitions(ergo_active_usage_tests PRIVATE UNICODE _UNICODE)
-    target_compile_options(ergo_active_usage_tests PRIVATE /W3)
+    target_compile_options(ergo_active_usage_tests PRIVATE /W3 /EHsc /utf-8)
     add_test(NAME ergo_active_usage COMMAND ergo_active_usage_tests)
     set_tests_properties(ergo_active_usage PROPERTIES TIMEOUT 30 LABELS ergo-active)
+
+    add_executable(ergo_active_dashboard_tests tests/dashboard.cpp)
+    target_compile_features(ergo_active_dashboard_tests PRIVATE cxx_std_20)
+    target_include_directories(ergo_active_dashboard_tests PRIVATE src)
+    target_compile_definitions(ergo_active_dashboard_tests PRIVATE ERGO_ACTIVE_TESTS)
+    target_link_libraries(ergo_active_dashboard_tests PRIVATE libdesktop::ui libdesktop::system)
+    target_compile_options(ergo_active_dashboard_tests PRIVATE /W3 /EHsc /utf-8)
+    add_test(NAME ergo_active_dashboard COMMAND ergo_active_dashboard_tests)
+    set_tests_properties(ergo_active_dashboard PROPERTIES TIMEOUT 30 LABELS ergo-active)
 
     add_test(NAME ergo_active_manifest COMMAND "${CMAKE_COMMAND}"
         "-DEXE=$<TARGET_FILE:ergo-active>" -P "${PROJECT_SOURCE_DIR}/tests/manifest.cmake")
