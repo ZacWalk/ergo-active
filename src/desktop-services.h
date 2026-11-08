@@ -1,21 +1,20 @@
 // desktop-services.h - Thin ergo-active adapters over libdesktop services.
 //
-// There is no Win32 GUI, shell, registry or file implementation here.  The
-// shared pf/platform layers own those mechanisms; this file supplies the
-// app-specific paths, setting names, urgency colours and policy callbacks.
+// The platform library owns the filesystem, settings, clipboard and tray
+// mechanisms; this file supplies the app-specific paths and policy callbacks.
 
 #pragma once
 
-#include "platform.h"
+#include "libdesktop/platform.h"
+
 #include "app-services.h"
 #include "data.h"
-
-#include "libdesktop/system.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <span>
 #include <string>
 #include <string_view>
@@ -26,19 +25,20 @@ class desktop_activity_store final : public activity_store
 public:
 	desktop_activity_store()
 	{
-		const auto app_data = pf::roaming_app_data_path();
-		if (app_data.empty())
+		const auto app_data = platform::known_path(platform::known_folder::roaming_app_data);
+		if (app_data.is_empty())
 		{
 			_diagnostic = "The roaming application-data folder is unavailable.";
 			return;
 		}
 
 		_root = app_data.combine("ergo-active");
-		if (!pf::platform_create_directory(_root))
+		const auto created = platform::create_folder(_root);
+		if (!created.success() && !platform::is_directory(_root))
 		{
-			_diagnostic = "Could not create " + std::string(_root.view());
-			if (const auto detail = pf::platform_last_error_message(); !detail.empty())
-				_diagnostic += ": " + detail;
+			_diagnostic = "Could not create " + std::string(_root.text());
+			if (!created.error_message.empty())
+				_diagnostic += ": " + created.error_message;
 			return;
 		}
 		_ready = true;
@@ -76,7 +76,7 @@ public:
 	int64_t seconds_since_written(const std::string_view name) const override
 	{
 		const auto path = file_path(name);
-		const auto age = pf::file_age_seconds(path);
+		const auto age = platform::file_age_seconds(path);
 		if (!age)
 			return 0;
 		return std::max<int64_t>(0, static_cast<int64_t>(*age));
@@ -86,16 +86,16 @@ public:
 	[[nodiscard]] const std::string& diagnostics() const { return _diagnostic; }
 
 private:
-	pf::file_path _root;
+	core::folder_path _root;
 	bool _ready = false;
 	std::string _diagnostic;
 
-	pf::file_path file_path(const std::string_view name) const
+	core::file_path file_path(const std::string_view name) const
 	{
 		if (!_ready)
 			return {};
 		if (name == "history.csv" || name == "usage.dat")
-			return _root.combine(name);
+			return _root.combine_file(name);
 		return {};
 	}
 
@@ -108,33 +108,31 @@ private:
 	                                      std::vector<uint8_t>& value) const
 	{
 		const auto path = file_path(name);
-		if (path.empty())
+		if (path.is_empty())
 			return {false, false, "The activity-data folder is unavailable."};
 
-		const auto opened = pf::open_for_read_result(path);
-		if (!opened.success())
+		const auto input = platform::open_file(path, platform::file_open_mode::read);
+		if (!input)
 		{
-			if (opened.result.code == pf::file_error::no_such_file)
+			if (platform::file_attributes(path).confirmed_missing())
 				return {false, true, {}};
-			return {false, false, opened.result.message.empty()
-			                          ? "Could not read " + std::string(path.view())
-			                          : opened.result.message};
+			return {false, false, "Could not read " + path.str()};
 		}
 
-		const auto& input = opened.file;
-		value.resize(input->size());
+		const auto size = input->size();
+		if (size > std::numeric_limits<size_t>::max())
+			return {false, false, "Activity-data file is too large."};
+		value.resize(static_cast<size_t>(size));
 		size_t offset = 0;
 		while (offset < value.size())
 		{
-			const uint32_t remaining = static_cast<uint32_t>(
-				std::min<size_t>(value.size() - offset, UINT32_MAX));
-			uint32_t read = 0;
-			if (!input->read(value.data() + offset, remaining, &read) || read == 0)
+			const auto read = input->read(value.data() + offset, value.size() - offset);
+			if (read == 0)
 			{
 				value.clear();
 				return {false, false, "Could not read the complete activity-data file."};
 			}
-			offset += read;
+			offset += static_cast<size_t>(read);
 		}
 		return {};
 	}
@@ -143,21 +141,21 @@ private:
 	                                  const std::span<const uint8_t> value) const
 	{
 		const auto destination = file_path(name);
-		if (destination.empty())
+		if (destination.is_empty())
 			return failure(_diagnostic.empty() ? "The activity-data folder is unavailable." : _diagnostic);
 
-		const auto opened = pf::create_atomic_file_writer_result(destination);
+		const auto opened = platform::create_atomic_file_writer_result(destination);
 		if (!opened.success())
-			return failure(opened.result.message.empty()
-			                  ? "Could not stage " + std::string(destination.view())
-			                  : opened.result.message);
+			return failure(opened.result.error_message.empty()
+			                  ? "Could not stage " + destination.str()
+			                  : opened.result.error_message);
 
 		if (const auto result = opened.writer->write(value); !result.success())
-			return failure(result.message.empty() ? "Could not write activity data." : result.message);
+			return failure(result.error_message.empty() ? "Could not write activity data." : result.error_message);
 		if (const auto result = opened.writer->flush(); !result.success())
-			return failure(result.message.empty() ? "Could not flush activity data." : result.message);
+			return failure(result.error_message.empty() ? "Could not flush activity data." : result.error_message);
 		if (const auto result = opened.writer->commit(); !result.success())
-			return failure(result.message.empty() ? "Could not publish activity data." : result.message);
+			return failure(result.error_message.empty() ? "Could not publish activity data." : result.error_message);
 		return {};
 	}
 };
@@ -205,26 +203,31 @@ class desktop_clipboard final : public clipboard_service
 public:
 	std::string text() const override
 	{
-		return pf::platform_text_from_clipboard();
+		if (const auto value = platform::clipboard_text())
+			return *value;
+		return {};
 	}
 
 	bool set_text(const std::string_view value) override
 	{
-		return pf::platform_text_to_clipboard(value);
+		return platform::set_clipboard(value);
 	}
 };
 
 class desktop_uptime final : public uptime_service
 {
 public:
-	uint64_t milliseconds() override { return pf::platform_uptime_ms(); }
+	uint64_t milliseconds() override
+	{
+		return static_cast<uint64_t>(std::max(0.0, platform::monotonic_seconds()) * 1000.0);
+	}
 };
 
 class desktop_tray final : public tray_service
 {
 public:
 	bool install(std::function<void()> restore,
-	             std::function<void(pf::ipoint, bool)> context_menu,
+	             std::function<void(core::pointi, bool)> context_menu,
 	             std::function<void()> end_session) override
 	{
 		_restore = std::move(restore);
@@ -232,7 +235,7 @@ public:
 		_end_session = std::move(end_session);
 		_pixels = make_icon(0);
 
-		pf::tray_callbacks callbacks;
+		platform::tray_callbacks callbacks;
 		callbacks.on_activate = _restore;
 		callbacks.on_context_menu = _context_menu;
 		callbacks.on_balloon_click = _restore;
@@ -242,8 +245,8 @@ public:
 				_end_session();
 		};
 
-		const pf::tray_icon_image image{_pixels, {IconSize, IconSize}};
-		_service = pf::create_tray_service(image, "ergo-active", std::move(callbacks));
+		const platform::tray_icon_image image{_pixels, {IconSize, IconSize}};
+		_service = platform::create_tray_service(image, "ergo-active", std::move(callbacks));
 		if (!_service || !_service->available())
 		{
 			_diagnostic = _service ? _service->diagnostics() : "The system tray is unavailable.";
@@ -274,7 +277,7 @@ public:
 		if (level == _current_urgency)
 			return;
 		_pixels = make_icon(level);
-		const pf::tray_icon_image image{_pixels, {IconSize, IconSize}};
+		const platform::tray_icon_image image{_pixels, {IconSize, IconSize}};
 		if (!_service->set_icon(image))
 		{
 			_diagnostic = _service->diagnostics();
@@ -299,7 +302,7 @@ public:
 		if (!_service)
 			return;
 		_service->set_tooltip(tip);
-		if (!_service->show_balloon(title, message, pf::tray_balloon_kind::info))
+		if (!_service->show_balloon(title, message, platform::tray_balloon_kind::info))
 			_diagnostic = _service->diagnostics();
 	}
 
@@ -310,19 +313,19 @@ public:
 
 private:
 	static constexpr int IconSize = 16;
-	pf::tray_service_ptr _service;
+	platform::tray_service_ptr _service;
 	std::vector<uint32_t> _pixels;
 	std::string _diagnostic;
 	int _current_urgency = -1;
 	std::function<void()> _restore;
-	std::function<void(pf::ipoint, bool)> _context_menu;
+	std::function<void(core::pointi, bool)> _context_menu;
 	std::function<void()> _end_session;
 
 	static std::vector<uint32_t> make_icon(const int level)
 	{
-		const pf::color_t color = level >= 2 ? pf::color_t{0xE0, 0x40, 0x40}
-			: level == 1 ? pf::color_t{0xE0, 0xA0, 0x20}
-			             : pf::color_t{0x4E, 0xC9, 0x6F};
+		const core::color32 color = level >= 2 ? core::rgb(0xE0, 0x40, 0x40)
+			: level == 1 ? core::rgb(0xE0, 0xA0, 0x20)
+			             : core::rgb(0x4E, 0xC9, 0x6F);
 		std::vector<uint32_t> pixels(static_cast<size_t>(IconSize) * IconSize);
 		const float half = IconSize * 0.5f;
 		const float radius = half - 0.5f;
@@ -337,30 +340,23 @@ private:
 					continue;
 				const auto alpha = static_cast<uint32_t>(
 					std::clamp(radius + 0.5f - distance, 0.0f, 1.0f) * 255.0f);
-				pixels[static_cast<size_t>(y) * IconSize + x] =
-					(alpha << 24) | (static_cast<uint32_t>(color.r) << 16) |
-					(static_cast<uint32_t>(color.g) << 8) | color.b;
+				pixels[static_cast<size_t>(y) * IconSize + x] = core::abgr(color, alpha);
 			}
 		}
 
 		// A small white check keeps the status icon legible without loading a
 		// native HICON or duplicating the shell's rasterisation.
-		const pf::color_t mark{0xFF, 0xFF, 0xFF};
 		for (int i = 0; i < 4; ++i)
 		{
 			const int x = 5 + i;
 			const int y = 9 + i;
-			pixels[static_cast<size_t>(y) * IconSize + x] =
-				0xFF000000u | (static_cast<uint32_t>(mark.r) << 16) |
-				(static_cast<uint32_t>(mark.g) << 8) | mark.b;
+			pixels[static_cast<size_t>(y) * IconSize + x] = core::abgr(core::rgb(0xFF, 0xFF, 0xFF));
 		}
 		for (int i = 0; i < 5; ++i)
 		{
 			const int x = 8 + i;
 			const int y = 12 - i;
-			pixels[static_cast<size_t>(y) * IconSize + x] =
-				0xFF000000u | (static_cast<uint32_t>(mark.r) << 16) |
-				(static_cast<uint32_t>(mark.g) << 8) | mark.b;
+			pixels[static_cast<size_t>(y) * IconSize + x] = core::abgr(core::rgb(0xFF, 0xFF, 0xFF));
 		}
 		return pixels;
 	}

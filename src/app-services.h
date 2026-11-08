@@ -1,11 +1,12 @@
 // app-services.h - Neutral seams between the dashboard and Windows services.
 //
-// The dashboard talks to these small contracts.  Their Win32 implementations
-// live in win-services.h; no Windows type crosses into the model or UI.
+// The dashboard talks to these small contracts. Their Win32 monitoring
+// implementation lives in win-services.h; generic files, settings, clipboard
+// and tray behavior belongs to libdesktop's platform layer.
 
 #pragma once
 
-#include "platform.h"
+#include "libdesktop/core.h"
 
 #include <cstdint>
 #include <functional>
@@ -57,7 +58,7 @@ struct tray_service
 	virtual ~tray_service() = default;
 
 	virtual bool install(std::function<void()> restore,
-	                     std::function<void(pf::ipoint, bool)> context_menu,
+	                     std::function<void(core::pointi, bool)> context_menu,
 	                     std::function<void()> end_session) = 0;
 	virtual void uninstall() = 0;
 	virtual void update_urgency(int level) = 0;

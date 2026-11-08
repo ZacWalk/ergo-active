@@ -16,7 +16,6 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /EHsc")
-set(LIBDESKTOP_SYSTEM ON)
 
 # The application and the static LGPL platform layer use the same CRT.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -32,11 +31,11 @@ endif()
 include(FetchContent)
 FetchContent_Declare(libdesktop
     GIT_REPOSITORY https://github.com/ZacWalk/libdesktop.git
-    GIT_TAG        31aae322af6e0696a9597726705b1121bd31580b
+    GIT_TAG        04109ee82a500db38d439fa281bbc3f43124adfe
 )
 FetchContent_MakeAvailable(libdesktop)
 
-platform_add_app(ergo-active UI
+libdesktop_add_app(ergo-active
     SOURCES
         src/main.cpp
         src/app-services.h
@@ -53,7 +52,7 @@ platform_add_app(ergo-active UI
 )
 
 target_include_directories(ergo-active PRIVATE src)
-target_link_libraries(ergo-active PRIVATE libdesktop::system)
+target_link_libraries(ergo-active PRIVATE libdesktop::ui)
 target_compile_options(ergo-active PRIVATE /W3 /MP /EHsc /utf-8)
 
 set_target_properties(ergo-active PROPERTIES
@@ -81,7 +80,7 @@ if(BUILD_TESTING)
     target_compile_features(ergo_active_dashboard_tests PRIVATE cxx_std_20)
     target_include_directories(ergo_active_dashboard_tests PRIVATE src)
     target_compile_definitions(ergo_active_dashboard_tests PRIVATE ERGO_ACTIVE_TESTS)
-    target_link_libraries(ergo_active_dashboard_tests PRIVATE libdesktop::ui libdesktop::system)
+    target_link_libraries(ergo_active_dashboard_tests PRIVATE libdesktop::ui)
     target_compile_options(ergo_active_dashboard_tests PRIVATE /W3 /EHsc /utf-8)
     add_test(NAME ergo_active_dashboard COMMAND ergo_active_dashboard_tests)
     set_tests_properties(ergo_active_dashboard PROPERTIES TIMEOUT 30 LABELS ergo-active)
