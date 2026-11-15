@@ -27,24 +27,19 @@
 class win_input_monitor final : public input_monitor
 {
 public:
-	win_input_monitor()
-	{
-		seed();
-	}
+	win_input_monitor() { seed(); }
 
 	input_sample sample() override
 	{
 		LASTINPUTINFO last_input{sizeof(LASTINPUTINFO)};
-		if (!GetLastInputInfo(&last_input) || last_input.dwTime == _last_input_tick)
-			return {};
+		if (!GetLastInputInfo(&last_input) || last_input.dwTime == _last_input_tick) return {};
 
 		// Keep the old sampling contract: a changed last-input tick is counted
 		// once, and a failed cursor query is not misclassified as keyboard input.
 		_last_input_tick = last_input.dwTime;
 
 		POINT cursor = {};
-		if (!GetCursorPos(&cursor))
-			return {};
+		if (!GetCursorPos(&cursor)) return {};
 
 		if (cursor.x != _last_mouse.x || cursor.y != _last_mouse.y)
 		{
@@ -59,8 +54,7 @@ private:
 	void seed()
 	{
 		LASTINPUTINFO last_input{sizeof(LASTINPUTINFO)};
-		if (GetLastInputInfo(&last_input))
-			_last_input_tick = last_input.dwTime;
+		if (GetLastInputInfo(&last_input)) _last_input_tick = last_input.dwTime;
 		GetCursorPos(&_last_mouse);
 	}
 
@@ -74,8 +68,7 @@ public:
 	void poll() override
 	{
 		const HDESK desktop = OpenInputDesktop(0, FALSE, GENERIC_READ);
-		if (desktop == nullptr)
-			return;
+		if (desktop == nullptr) return;
 
 		wchar_t name[64] = {};
 		DWORD bytes = 0;

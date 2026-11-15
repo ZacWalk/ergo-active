@@ -31,10 +31,7 @@ struct dashboard_layout
 	dashboard_rect slider;
 	dashboard_rect edit;
 
-	static int scale(const double dpi, const double value)
-	{
-		return static_cast<int>(std::lround(value * dpi));
-	}
+	static int scale(const double dpi, const double value) { return static_cast<int>(std::lround(value * dpi)); }
 
 	static dashboard_layout measure(const int width, const int height, const double dpi)
 	{

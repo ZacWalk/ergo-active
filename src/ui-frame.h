@@ -1,8 +1,8 @@
 // ui-frame.h - libdesktop-backed dashboard presentation and event policy.
 //
-// The dashboard is a ui frame host: its charts and cards draw through
-// render::draw_context, while the menu, slider and numeric editor are controls
-// in the frame's element tree. Platform owns the native window and event loop.
+// The dashboard gives ui::shell its menus and the content under them: its
+// charts and cards draw on a canvas through render::draw_context, with the
+// slider and numeric editor placed over it. The shell owns the window.
 
 #pragma once
 
@@ -10,7 +10,7 @@
 #include "libdesktop/ui.h"
 #include "libdesktop/ui/controls.h"
 #include "libdesktop/ui/elements.h"
-#include "libdesktop/ui/menu_bar.h"
+#include "libdesktop/ui/shell.h"
 
 #include "app-services.h"
 #include "data.h"
@@ -32,31 +32,31 @@
 #include <utility>
 #include <vector>
 
-class dashboard_element final : public ui::element
+// The content under the shell's menu bar. It asks for no size of its own, so it
+// fills what the menu bar leaves, and its owner places what it holds.
+class dashboard_content final : public ui::elements
 {
 public:
-	explicit dashboard_element(std::function<void(render::draw_context&, core::sizei)> paint)
-		: _paint(std::move(paint))
+	explicit dashboard_content(std::function<void(render::measure_context&, core::recti)> place) :
+		_place(std::move(place))
 	{
+		padding = {0, 0};
+		margin = {0, 0};
 	}
 
 	core::sizei measure(render::measure_context&, const int) const override { return {}; }
 
-	void render(render::draw_context& dc, const core::pointi element_offset) const override
+	void layout(render::measure_context& mc, const core::recti bounds_in) override
 	{
-		if (!_paint || bounds.is_empty()) return;
-		const auto target = bounds.offset(element_offset);
-		render::scoped_clip clip(dc, target);
-		ui::offset_draw_context local(dc, target.top_left());
-		_paint(local, bounds.extent());
+		bounds = bounds_in;
+		if (_place) _place(mc, bounds_in);
 	}
 
 private:
-	std::function<void(render::draw_context&, core::sizei)> _paint;
+	std::function<void(render::measure_context&, core::recti)> _place;
 };
 
-class main_frame final : public ui::element_host,
-                         public std::enable_shared_from_this<main_frame>
+class main_frame final
 {
 public:
 	static constexpr int MinDelay = 20;
@@ -66,16 +66,11 @@ public:
 	static constexpr int TimerGap = usage_data::TimerGap;
 	static constexpr int FlushIntervalTicks = 5 * TimerGap;
 
-	main_frame(activity_store& store,
-	           input_monitor& input,
-	           uptime_service& clock,
-	           session_monitor& session,
-	           settings_store& settings,
-	           clipboard_service& clipboard,
-	           tray_service& tray)
-		: _usage(&store), _daily(&store), _input(input), _clock(clock), _session(session),
-		  _settings(settings), _clipboard(clipboard), _tray(tray),
-		  _delay_control(MinDelay, MaxDelay, settings.load_delay(MinDelay, MaxDelay, 50))
+	main_frame(activity_store& store, input_monitor& input, uptime_service& clock, session_monitor& session,
+	           settings_store& settings, clipboard_service& clipboard, tray_service& tray) :
+		_usage(&store), _daily(&store), _input(input), _clock(clock), _session(session), _settings(settings),
+		_clipboard(clipboard), _tray(tray),
+		_delay_control(MinDelay, MaxDelay, settings.load_delay(MinDelay, MaxDelay, 50))
 	{
 		_edit = make_edit();
 		_slider = ui::make_slider(MinDelay, MaxDelay, [this](const int value, const bool tracking)
@@ -90,24 +85,23 @@ public:
 		_slider->set_pos(_delay_control.value());
 		install_menu();
 
-		_root = std::make_shared<ui::elements>();
-		_canvas = std::make_shared<dashboard_element>([this](render::draw_context& dc, const core::sizei extent)
+		_canvas = std::make_shared<ui::canvas_element>([this](render::draw_context& dc, const core::recti area)
 		{
-			paint_dashboard(dc, extent);
+			ui::offset_draw_context local(dc, area.top_left());
+			paint_dashboard(local, area.extent());
 		});
-		// The canvas is first so the menu and controls draw over its presentation.
-		_root->add(_canvas);
-		_root->add(_menu_bar);
-		_root->add(_slider);
-		_root->add(_edit);
+		_content = std::make_shared<dashboard_content>([this](render::measure_context& mc, const core::recti bounds)
+		{ layout_content(mc, bounds); });
+		// The canvas is first so the controls draw over its presentation.
+		_content->add(_canvas);
+		_content->add(_slider);
+		_content->add(_edit);
 
-		if (!_usage.last_storage_error().empty())
-			report_persistence_error("usage", _usage.last_storage_error());
-		if (!_daily.last_storage_error().empty())
-			report_persistence_error("history", _daily.last_storage_error());
+		if (!_usage.last_storage_error().empty()) report_persistence_error("usage", _usage.last_storage_error());
+		if (!_daily.last_storage_error().empty()) report_persistence_error("history", _daily.last_storage_error());
 	}
 
-	~main_frame() override
+	~main_frame()
 	{
 		if (!_shutdown_flushed) flush();
 		_tray.uninstall();
@@ -116,20 +110,24 @@ public:
 	main_frame(const main_frame&) = delete;
 	main_frame& operator=(const main_frame&) = delete;
 
+	// The shell's menu bar and the content under it.
+	const std::vector<ui::command_ptr>& menus() const { return _menus; }
+	ui::element_ptr content() const { return _content; }
+
 	void attach(const ui::frame_ptr& window)
 	{
 		_window = window;
-		_window->window_text("ergo-active");
 		_last_timer_ms = _clock.milliseconds();
 		if (_usage.take_break_while_closed()) _daily.record_break();
-		if (!_tray.install([this] { restore(); },
-		                  [this](const core::pointi point, const bool keyboard_anchor)
-		                  { show_tray_menu(point, keyboard_anchor); },
-		                  [this] { flush(); }))
+		if (!_tray.install([this] { restore(); }, [this](const core::pointi point, const bool keyboard_anchor)
+		{ show_tray_menu(point, keyboard_anchor); }, [this] { flush(); }))
 			core::log("ergo-active", "tray service unavailable: " + _tray.diagnostics());
 	}
 
-	void hide() { if (_window) _window->show(false); }
+	void hide()
+	{
+		if (_window) _window->show(false);
+	}
 
 	void restore()
 	{
@@ -162,12 +160,8 @@ public:
 		return result;
 	}
 
-	bool dispatch_key(const char32_t key, const platform::key_state keys) const
-	{
-		return ui::dispatch_accelerator(_menus, key, keys);
-	}
-
 	bool editor_focused() const { return _edit && _edit->is_focused(); }
+	void focus_changed(bool has_focus, const ui::control_ptr& child);
 
 	void on_timer();
 	void flush();
@@ -184,33 +178,6 @@ public:
 	[[nodiscard]] int test_locked_ticks() const { return _daily.today().locked_ticks; }
 	[[nodiscard]] int test_break_count() const { return _daily.today().break_count; }
 #endif
-
-	void on_window_layout(render::measure_context& mc, core::sizei extent,
-	                      bool is_minimized) override;
-	void on_window_paint(render::draw_context& dc) override { _root->render(dc, {}); }
-	void visit_elements(const std::function<void(const ui::element_ptr&, core::pointi)>& visit) override
-	{
-		visit(_root, {});
-	}
-
-	void focus_changed(bool has_focus, const ui::control_ptr& child) override;
-	void on_window_destroy() override { _window.reset(); }
-	void invoke(commands) override {}
-	bool is_command_checked(commands) override { return false; }
-	void track_menu(core::recti bounds, const std::vector<ui::command_ptr>& commands) override
-	{
-		if (_window) _window->track_menu(bounds, commands);
-	}
-	const ui::frame_ptr frame() const override { return _window ? _window : ui::no_frame(); }
-	const ui::frame_ptr owner() override { return frame(); }
-	void invalidate_element(const ui::element_ptr&) override { if (_window) _window->invalidate(); }
-	void invalidate(ui::host_invalid) override { if (_window) _window->invalidate(); }
-	void controller_changed() override { if (_window) _window->invalidate(); }
-	ui::controller_ptr controller_from_location(core::pointi loc, ui::hit_test_context& ctx) override
-	{
-		return _root->controller_from_location(
-			std::static_pointer_cast<ui::element_host>(shared_from_this()), loc, {}, ctx);
-	}
 
 private:
 	static constexpr core::color32 BackgroundColor = core::rgba(0x1A, 0x1A, 0x2E);
@@ -234,15 +201,13 @@ private:
 	clipboard_service& _clipboard;
 	tray_service& _tray;
 	ui::frame_ptr _window;
-	std::shared_ptr<ui::elements> _root;
-	std::shared_ptr<dashboard_element> _canvas;
-	ui::control_ptr _menu_bar;
+	std::shared_ptr<dashboard_content> _content;
+	std::shared_ptr<ui::canvas_element> _canvas;
 	ui::trackbar_ptr _slider;
 	ui::edit_ptr _edit;
 	std::vector<ui::command_ptr> _menus;
 	delay_control _delay_control;
 	dashboard_layout _layout;
-	core::sizei _extent;
 	double _dpi = 1.0;
 	uint64_t _last_timer_ms = 0;
 	bool _slider_dragging = false;
@@ -271,21 +236,19 @@ private:
 	{
 		return core::lerp(base, tint, std::clamp(amount, 0.0f, 1.0f));
 	}
-	static void fill_rounded(render::draw_context& draw, const dashboard_rect& rect,
-	                         core::color32 color, int radius)
+	static void fill_rounded(render::draw_context& draw, const dashboard_rect& rect, core::color32 color, int radius)
 	{
 		if (rect.width() <= 0 || rect.height() <= 0) return;
 		draw.draw_rounded_rect(to_platform_rect(rect), core::color(color), radius);
 	}
 
-	static void draw_text_box(render::draw_context& draw, std::string_view text,
-	                          render::font_face text_font, const dashboard_rect& rect,
-	                          core::color32 text_color, core::color32 background,
+	static void draw_text_box(render::draw_context& draw, std::string_view text, render::font_face text_font,
+	                          const dashboard_rect& rect, core::color32 text_color, core::color32 background,
 	                          bool center = false, bool right = false, bool vertical_center = false)
 	{
 		if (text.empty() || rect.width() <= 0 || rect.height() <= 0) return;
 		const auto extent = draw.measure_text(text, text_font, render::text_style::single_line,
-		                                     std::numeric_limits<int>::max());
+		                                      std::numeric_limits<int>::max());
 		int x = rect.left;
 		if (center) x = rect.left + (rect.width() - extent.cx) / 2;
 		else if (right) x = rect.right - extent.cx;
@@ -293,8 +256,7 @@ private:
 		if (vertical_center) y = rect.top + (rect.height() - extent.cy) / 2;
 		const core::recti clip{x, y, x + std::max(1, extent.cx), y + std::max(1, extent.cy)};
 		draw.draw_rect(clip, core::color(background));
-		draw.draw_text(text, clip, text_font, render::text_style::single_line,
-		               core::color(text_color), {});
+		draw.draw_text(text, clip, text_font, render::text_style::single_line, core::color(text_color), {});
 	}
 
 	ui::edit_ptr make_edit()
@@ -305,10 +267,8 @@ private:
 		styles.rounded_corners = false;
 		styles.select_all_on_focus = true;
 		styles.font = render::font_face::dialog;
-		auto edit = ui::make_edit(styles, _delay_control.text(), [this](const std::string& value)
-		{
-			editor_changed(value);
-		});
+		auto edit = ui::make_edit(styles, _delay_control.text(),
+		                          [this](const std::string& value) { editor_changed(value); });
 		edit->set_background(SurfaceColor);
 		return edit;
 	}
@@ -328,10 +288,16 @@ private:
 	{
 		auto hide_command = std::make_shared<ui::command>();
 		hide_command->text = "Hide to tray";
-		hide_command->invoke = [this] { hide(); };
+		hide_command->invoke = [this]
+		{
+			hide();
+		};
 		auto exit_command = std::make_shared<ui::command>();
 		exit_command->text = "Exit";
-		exit_command->invoke = [this] { request_close(true); };
+		exit_command->invoke = [this]
+		{
+			request_close(true);
+		};
 		auto file = std::make_shared<ui::command>();
 		file->text = "&File";
 		file->menu = [hide_command, exit_command]
@@ -339,7 +305,6 @@ private:
 			return std::vector<ui::command_ptr>{hide_command, exit_command};
 		};
 		_menus = {file};
-		_menu_bar = ui::make_menu_bar(_menus);
 	}
 
 	void show_tray_menu(core::pointi screen_position, bool)
@@ -347,16 +312,24 @@ private:
 		if (!_window) return;
 		auto restore_command = std::make_shared<ui::command>();
 		restore_command->text = "Restore";
-		restore_command->invoke = [this] { restore(); };
+		restore_command->invoke = [this]
+		{
+			restore();
+		};
 		auto exit_command = std::make_shared<ui::command>();
 		exit_command->text = "Exit";
-		exit_command->invoke = [this] { request_close(true); };
-		_window->track_menu({screen_position.x, screen_position.y,
-		                     screen_position.x + 1, screen_position.y + 1},
+		exit_command->invoke = [this]
+		{
+			request_close(true);
+		};
+		_window->track_menu({screen_position.x, screen_position.y, screen_position.x + 1, screen_position.y + 1},
 		                    {restore_command, exit_command});
 	}
 
-	void sync_editor_from_delay() { if (_edit) _edit->window_text(_delay_control.text()); }
+	void sync_editor_from_delay()
+	{
+		if (_edit) _edit->window_text(_delay_control.text());
+	}
 
 	void report_persistence_error(std::string_view kind, std::string_view diagnostic)
 	{
@@ -371,10 +344,14 @@ private:
 	void show_break_balloon(int last_break)
 	{
 		static constexpr std::string_view tips[] = {
-			"Roll your shoulders back and down", "Stretch your wrists - extend and flex",
-			"Adjust your chair so feet are flat on the floor", "Blink deliberately - your eyes need moisture",
-			"Stand up and stretch your legs", "Look away from the screen at something distant",
-			"Relax your jaw and unclench your teeth", "Check your posture - sit up straight",
+			"Roll your shoulders back and down",
+			"Stretch your wrists - extend and flex",
+			"Adjust your chair so feet are flat on the floor",
+			"Blink deliberately - your eyes need moisture",
+			"Stand up and stretch your legs",
+			"Look away from the screen at something distant",
+			"Relax your jaw and unclench your teeth",
+			"Check your posture - sit up straight",
 		};
 		const auto message = std::format("You have not had a 3 minute break for {} or more minutes!", last_break);
 		const auto tip = std::format("{}\n{}", message, tips[_posture_tip_index++ % std::size(tips)]);
@@ -390,8 +367,7 @@ private:
 		_last_balloon_ticks = 0;
 	}
 
-	static core::surface_ptr make_surface(int width, int height,
-	                                      const std::vector<core::color32>& pixels)
+	static core::surface_ptr make_surface(int width, int height, const std::vector<core::color32>& pixels)
 	{
 		if (width <= 0 || height <= 0) return {};
 		const auto surface = std::make_shared<core::surface>();
@@ -399,38 +375,30 @@ private:
 		for (int y = 0; y < height; ++y)
 		{
 			auto* const row = reinterpret_cast<core::color32*>(surface->pixels_line(y));
-			for (int x = 0; x < width; ++x)
-				row[x] = core::abgr(pixels[static_cast<size_t>(y) * width + x], 0);
+			for (int x = 0; x < width; ++x) row[x] = core::abgr(pixels[static_cast<size_t>(y) * width + x], 0);
 		}
 		return surface;
 	}
 
+	void layout_content(render::measure_context& mc, core::recti bounds);
 	void paint_dashboard(render::draw_context& draw, core::sizei extent);
 	void draw_graph(render::draw_context& draw, const dashboard_rect& panel);
 	void draw_pie(render::draw_context& draw, const dashboard_rect& panel);
-	void draw_pie_bitmap(render::draw_context& draw, const dashboard_rect& rect,
-	                     const float* segments, const core::color32* colors, int count);
+	void draw_pie_bitmap(render::draw_context& draw, const dashboard_rect& rect, const float* segments,
+	                     const core::color32* colors, int count);
 	static core::color32 pixel_lerp(core::color32 a, core::color32 b, int t256)
 	{
 		return core::lerp(a, b, std::clamp(static_cast<float>(t256) / 255.0f, 0.0f, 1.0f));
 	}
 };
 
-inline void main_frame::on_window_layout(render::measure_context& mc, const core::sizei extent,
-                                          const bool is_minimized)
+inline void main_frame::layout_content(render::measure_context& mc, const core::recti bounds)
 {
-	if (is_minimized) return;
-	_extent = extent;
 	_dpi = mc.scale_factor > 0.0 ? mc.scale_factor : 1.0;
-	const auto menu_measure = _menu_bar->measure(mc, std::max(1, extent.cx));
-	const int menu_height = std::max(scale(_dpi, 28.0), menu_measure.cy);
-	_layout = dashboard_layout::measure(extent.cx, std::max(0, extent.cy - menu_height), _dpi);
-	_root->bounds = core::recti(extent);
-	_canvas->layout(mc, {0, menu_height, extent.cx, extent.cy});
-	_menu_bar->layout(mc, {0, 0, extent.cx, menu_height});
-	_slider->layout(mc, to_platform_rect(_layout.slider).offset({0, menu_height}));
-	_edit->layout(mc, to_platform_rect(_layout.edit).offset({0, menu_height}));
-	if (_window) _window->invalidate();
+	_layout = dashboard_layout::measure(bounds.width(), bounds.height(), _dpi);
+	_canvas->layout(mc, bounds);
+	_slider->layout(mc, to_platform_rect(_layout.slider).offset(bounds.top_left()));
+	_edit->layout(mc, to_platform_rect(_layout.edit).offset(bounds.top_left()));
 }
 
 inline void main_frame::focus_changed(const bool has_focus, const ui::control_ptr& child)
@@ -466,8 +434,7 @@ inline void main_frame::on_timer()
 	if (periods >= 2)
 	{
 		const bool was_current_day = _daily.is_current_day();
-		if (_usage.age(static_cast<int64_t>(periods) - 1).break_completed && was_current_day)
-			_daily.record_break();
+		if (_usage.age(static_cast<int64_t>(periods) - 1).break_completed && was_current_day) _daily.record_break();
 	}
 	_session.poll();
 	const auto input = _input.sample();
@@ -495,9 +462,9 @@ inline void main_frame::on_timer()
 	}
 	_tray.update_urgency(urgency_level(last_break, delay));
 	const int overdue = last_break - delay;
-	_tray.update_tooltip(overdue > 0
-		? std::format("ergo-active - Break overdue by {}m | Score: {}", overdue, _daily.today().score)
-		: std::format("ergo-active - Next break in {}m | Score: {}", -overdue, _daily.today().score));
+	_tray.update_tooltip(
+		overdue > 0 ? std::format("ergo-active - Break overdue by {}m | Score: {}", overdue, _daily.today().score)
+					: std::format("ergo-active - Next break in {}m | Score: {}", -overdue, _daily.today().score));
 	if (++_ticks_since_flush >= FlushIntervalTicks)
 	{
 		_ticks_since_flush = 0;
@@ -518,8 +485,8 @@ inline void main_frame::paint_dashboard(render::draw_context& draw, const core::
 	const auto small_font = font(9);
 	const auto label_font = font(13);
 
-	draw_text_box(draw, "ergo-active", font(28), {margin, 0, margin + content_width, title_bottom},
-	              AccentColor, BackgroundColor, false, false, true);
+	draw_text_box(draw, "ergo-active", font(28), {margin, 0, margin + content_width, title_bottom}, AccentColor,
+	              BackgroundColor, false, false, true);
 	const auto& today = _daily.today();
 	const core::color32 score_color = today.score < 50 ? RedColor : today.score < 75 ? YellowColor : GreenColor;
 	draw_text_box(draw, std::format("Score: {}", today.score), label_font,
@@ -529,6 +496,7 @@ inline void main_frame::paint_dashboard(render::draw_context& draw, const core::
 	const int card_height = scale(_dpi, 56.0);
 	const int card_gap = scale(_dpi, 6.0);
 	const int card_width = std::max(1, (content_width - card_gap * 3) / 4);
+	// clang-format off
 	const std::array<std::pair<std::string, core::color32>, 4> cards = {{
 		{std::format("{}h {}m", today.active_minutes / 60, today.active_minutes % 60), TextColor},
 		{std::format("{}m", _usage.get_minutes_until_warning(_delay_control.value())),
@@ -539,6 +507,7 @@ inline void main_frame::paint_dashboard(render::draw_context& draw, const core::
 		 today.longest_stretch > _delay_control.value() ? RedColor :
 		 today.longest_stretch > _delay_control.value() * 3 / 4 ? YellowColor : TextColor},
 	}};
+	// clang-format on
 	constexpr std::array<std::string_view, 4> card_labels = {"ACTIVE TODAY", "NEXT BREAK", "BREAKS", "MAX STRETCH"};
 	for (int i = 0; i < 4; ++i)
 	{
@@ -547,10 +516,11 @@ inline void main_frame::paint_dashboard(render::draw_context& draw, const core::
 		fill_rounded(draw, card, SurfaceColor, scale(_dpi, 6.0));
 		draw_text_box(draw, card_labels[i], small_font,
 		              {card.left + scale(_dpi, 8.0), card.top, card.right - scale(_dpi, 8.0),
-		               card.top + card.height() / 2}, DimTextColor, SurfaceColor, true, false, true);
+		               card.top + card.height() / 2},
+		              DimTextColor, SurfaceColor, true, false, true);
 		draw_text_box(draw, cards[i].first, body_font,
-		              {card.left + scale(_dpi, 8.0), card.top + card.height() / 2,
-		               card.right - scale(_dpi, 8.0), card.bottom - scale(_dpi, 6.0)},
+		              {card.left + scale(_dpi, 8.0), card.top + card.height() / 2, card.right - scale(_dpi, 8.0),
+		               card.bottom - scale(_dpi, 6.0)},
 		              cards[i].second, SurfaceColor, true, false, true);
 	}
 
@@ -560,8 +530,8 @@ inline void main_frame::paint_dashboard(render::draw_context& draw, const core::
 	const int gap = scale(_dpi, 8.0);
 	const int graph_width = std::max(0, content_width - pie_width - gap);
 	const dashboard_rect pie_panel{margin, content_top, margin + pie_width, content_bottom};
-	const dashboard_rect graph_panel{margin + pie_width + gap, content_top,
-	                                margin + pie_width + gap + graph_width, content_bottom};
+	const dashboard_rect graph_panel{margin + pie_width + gap, content_top, margin + pie_width + gap + graph_width,
+	                                 content_bottom};
 	fill_rounded(draw, pie_panel, SurfaceColor, scale(_dpi, 6.0));
 	fill_rounded(draw, graph_panel, SurfaceColor, scale(_dpi, 6.0));
 	draw_pie(draw, pie_panel);
@@ -570,8 +540,8 @@ inline void main_frame::paint_dashboard(render::draw_context& draw, const core::
 	const dashboard_rect slider = _layout.slider;
 	const dashboard_rect edit = _layout.edit;
 	draw_text_box(draw, "Break interval (min):", small_font,
-	              {margin, slider.top, static_cast<int>(_layout.label_width) + margin, slider.bottom},
-	              DimTextColor, BackgroundColor, false, false, true);
+	              {margin, slider.top, static_cast<int>(_layout.label_width) + margin, slider.bottom}, DimTextColor,
+	              BackgroundColor, false, false, true);
 	const auto micro = std::format("{} micro-pause{}", today.micro_pauses, today.micro_pauses == 1 ? "" : "s");
 	draw_text_box(draw, micro, small_font,
 	              {edit.right + scale(_dpi, 12.0), slider.top, edit.right + scale(_dpi, 150.0), slider.bottom},
@@ -655,8 +625,7 @@ inline void main_frame::draw_graph(render::draw_context& draw, const dashboard_r
 			pixels[static_cast<size_t>(height - 1 - dy) * width + x] = AccentColor;
 		const int top = height - total_height;
 		for (int dy = 0; dy < 2; ++dy)
-			if (top + dy >= 0 && top + dy < height)
-				pixels[static_cast<size_t>(top + dy) * width + x] = outline;
+			if (top + dy >= 0 && top + dy < height) pixels[static_cast<size_t>(top + dy) * width + x] = outline;
 	}
 	if (const auto surface = make_surface(width, height, pixels))
 		render::draw_surface(draw, surface, to_platform_rect(rect));
@@ -667,11 +636,10 @@ inline void main_frame::draw_graph(render::draw_context& draw, const dashboard_r
 		const int tick = minutes * usage_data::TimerGap;
 		if (tick >= n_width) continue;
 		const int x = rect.right - tick;
-		const std::string label = minutes >= 60 && minutes % 60 == 0
-			? std::format("{}h", minutes / 60) : std::format("{}m", minutes);
+		const std::string label = minutes >= 60 && minutes % 60 == 0 ? std::format("{}h", minutes / 60)
+		                                                             : std::format("{}m", minutes);
 		draw_text_box(draw, label, axis_font,
-		              {x - scale(_dpi, 12.0), rect.bottom - scale(_dpi, 18.0),
-		               x + scale(_dpi, 12.0), rect.bottom},
+		              {x - scale(_dpi, 12.0), rect.bottom - scale(_dpi, 18.0), x + scale(_dpi, 12.0), rect.bottom},
 		              blend(TextColor, BackgroundColor, 0.5f), BackgroundColor, true, false, false);
 	}
 }
@@ -683,10 +651,12 @@ inline void main_frame::draw_pie(render::draw_context& draw, const dashboard_rec
 	if (size <= scale(_dpi, 20.0)) return;
 	const auto& today = _daily.today();
 	const float segments[] = {
-		static_cast<float>(today.keyboard_ticks), static_cast<float>(today.mouse_ticks),
-		static_cast<float>(today.idle_ticks), static_cast<float>(today.locked_ticks),
+		static_cast<float>(today.keyboard_ticks),
+		static_cast<float>(today.mouse_ticks),
+		static_cast<float>(today.idle_ticks),
+		static_cast<float>(today.locked_ticks),
 		static_cast<float>(std::max(0, usage_data::MaxUses - today.keyboard_ticks - today.mouse_ticks -
-		                                  today.idle_ticks - today.locked_ticks)),
+	                                       today.idle_ticks - today.locked_ticks)),
 	};
 	const core::color32 colors[] = {AccentColor, ChartMouseColor, GreenColor, YellowColor, PieOffColor};
 	const int x = panel.left + (panel.width() - size) / 2;
@@ -702,17 +672,17 @@ inline void main_frame::draw_pie(render::draw_context& draw, const dashboard_rec
 	{
 		const int percent = total > 0.0f ? static_cast<int>(segments[i] / total * 100.0f + 0.5f) : 0;
 		const int row_y = y + size + scale(_dpi, 6.0) + i * row_height;
-		draw.draw_rect({panel.left + pad, row_y + scale(_dpi, 3.0),
-		               panel.left + pad + scale(_dpi, 6.0), row_y + scale(_dpi, 9.0)},
-		              core::color(colors[i]));
+		draw.draw_rect({panel.left + pad, row_y + scale(_dpi, 3.0), panel.left + pad + scale(_dpi, 6.0),
+		                row_y + scale(_dpi, 9.0)},
+		               core::color(colors[i]));
 		draw_text_box(draw, std::format("{} {}%", labels[i], percent), legend_font,
 		              {panel.left + pad + scale(_dpi, 10.0), row_y, panel.right - pad, row_y + row_height},
 		              DimTextColor, SurfaceColor, false, false, true);
 	}
 }
 
-inline void main_frame::draw_pie_bitmap(render::draw_context& draw, const dashboard_rect& rect,
-                                         const float* segments, const core::color32* colors, const int count)
+inline void main_frame::draw_pie_bitmap(render::draw_context& draw, const dashboard_rect& rect, const float* segments,
+                                        const core::color32* colors, const int count)
 {
 	const int width = rect.width();
 	const int height = rect.height();
@@ -747,7 +717,7 @@ inline void main_frame::draw_pie_bitmap(render::draw_context& draw, const dashbo
 		{1.0f / 64, 9.0f / 64, 3.0f / 64, 11.0f / 64},
 		{13.0f / 64, 5.0f / 64, 15.0f / 64, 7.0f / 64},
 		{4.0f / 64, 12.0f / 64, 2.0f / 64, 10.0f / 64},
-		{16.0f / 64, 8.0f / 64, 14.0f / 64, 6.0f / 64}
+		{16.0f / 64, 8.0f / 64, 14.0f / 64, 6.0f / 64},
 	};
 	std::vector<core::color32> pixels(static_cast<size_t>(width) * height, background);
 	for (int y = 0; y < height; ++y)
@@ -758,32 +728,36 @@ inline void main_frame::draw_pie_bitmap(render::draw_context& draw, const dashbo
 			const int dx = x - cx;
 			const int distance = dx * dx + dy * dy;
 			core::color32 color = background;
-			if (distance < inner_r1)
-				color = center;
+			if (distance < inner_r1) color = center;
 			else if (distance < outer_r2)
 			{
-				const double index1 = (std::numbers::pi + std::atan2(static_cast<double>(dy),
-				                                             static_cast<double>(dx))) /
+				const double index1 = (std::numbers::pi +
+				                       std::atan2(static_cast<double>(dy), static_cast<double>(dx))) /
 				                      std::numbers::pi * 32.0;
-				const double index2 = (std::numbers::pi + std::atan2(static_cast<double>(dy + 1),
-				                                             static_cast<double>(dx + 1))) /
+				const double index2 = (std::numbers::pi +
+				                       std::atan2(static_cast<double>(dy + 1), static_cast<double>(dx + 1))) /
 				                      std::numbers::pi * 32.0;
 				const core::color32 c1 = ring[static_cast<int>(index1) % 64];
 				const core::color32 c2 = ring[static_cast<int>(index2) % 64];
-				color = c1 == c2 ? c1 : pixel_lerp(c1, c2,
-					static_cast<int>(std::clamp(std::abs(index2 - index1), 0.0, 1.0) * 255));
+				color = c1 == c2 ? c1
+				                 : pixel_lerp(c1, c2,
+				                              static_cast<int>(std::clamp(std::abs(index2 - index1), 0.0, 1.0) * 255));
 				if (distance > outer_r1)
-					color = pixel_lerp(color, background, static_cast<int>(std::clamp(
-						static_cast<float>(distance - outer_r1) / outer_diff * 255.0f, 0.0f, 255.0f)));
+					color = pixel_lerp(color, background,
+					                   static_cast<int>(
+										   std::clamp(static_cast<float>(distance - outer_r1) / outer_diff * 255.0f,
+					                                  0.0f, 255.0f)));
 				else if (distance < inner_r2)
-					color = pixel_lerp(center, color, static_cast<int>(std::clamp(
-						static_cast<float>(distance - inner_r1) / inner_diff * 255.0f, 0.0f, 255.0f)));
+					color = pixel_lerp(center, color,
+					                   static_cast<int>(
+										   std::clamp(static_cast<float>(distance - inner_r1) / inner_diff * 255.0f,
+					                                  0.0f, 255.0f)));
 			}
 			const float d = (static_cast<float>(distance) / outer_r2 + dither[x % 4][y % 4]) * 0.25f;
 			const int lighten = static_cast<int>(d * 40.0f);
 			color = core::rgba(std::min(255, static_cast<int>(core::get_r(color)) + lighten),
-			                  std::min(255, static_cast<int>(core::get_g(color)) + lighten),
-			                  std::min(255, static_cast<int>(core::get_b(color)) + lighten));
+			                   std::min(255, static_cast<int>(core::get_g(color)) + lighten),
+			                   std::min(255, static_cast<int>(core::get_b(color)) + lighten));
 			pixels[static_cast<size_t>(y) * width + x] = color;
 		}
 	}

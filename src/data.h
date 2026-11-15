@@ -47,12 +47,9 @@ struct activity_store
 	virtual ~activity_store() = default;
 
 	virtual activity_store_read_result read_text(std::string_view name, std::string& value) const = 0;
-	virtual activity_store_result write_text_atomic(std::string_view name,
-	                                                std::string_view value) const = 0;
-	virtual activity_store_read_result read_binary(std::string_view name,
-	                                               std::vector<uint8_t>& value) const = 0;
-	virtual activity_store_result write_binary_atomic(std::string_view name,
-	                                                  std::span<const uint8_t> value) const = 0;
+	virtual activity_store_result write_text_atomic(std::string_view name, std::string_view value) const = 0;
+	virtual activity_store_read_result read_binary(std::string_view name, std::vector<uint8_t>& value) const = 0;
+	virtual activity_store_result write_binary_atomic(std::string_view name, std::span<const uint8_t> value) const = 0;
 
 	// Seconds since the file was written.  Missing or unreadable files return
 	// zero, which makes a restart with no prior state behave like a fresh run.
@@ -79,7 +76,7 @@ struct tick_sample
 	bool mouse = false;
 	bool locked = false;
 	int stretch_minutes = 0; // minutes since the last qualifying break
-	int break_interval = 0; // the user's configured break interval, in minutes
+	int break_interval = 0;  // the user's configured break interval, in minutes
 };
 
 class daily_stats
@@ -91,8 +88,7 @@ public:
 
 	explicit daily_stats(activity_store* store) : _store(store)
 	{
-		if (_store != nullptr)
-			load();
+		if (_store != nullptr) load();
 		ensure_today();
 	}
 
@@ -104,15 +100,9 @@ public:
 
 	static constexpr transient_t transient{};
 
-	explicit daily_stats(transient_t)
-	{
-		ensure_today();
-	}
+	explicit daily_stats(transient_t) { ensure_today(); }
 
-	~daily_stats()
-	{
-		save();
-	}
+	~daily_stats() { save(); }
 
 	void record_tick(const tick_sample& sample)
 	{
@@ -132,18 +122,15 @@ public:
 				_tick_accumulator = 0;
 			}
 
-			if (sample.keyboard)
-				today.keyboard_ticks++;
-			if (sample.mouse)
-				today.mouse_ticks++;
+			if (sample.keyboard) today.keyboard_ticks++;
+			if (sample.mouse) today.mouse_ticks++;
 		}
 		else
 		{
 			today.idle_ticks++;
 		}
 
-		if (sample.stretch_minutes > today.longest_stretch)
-			today.longest_stretch = sample.stretch_minutes;
+		if (sample.stretch_minutes > today.longest_stretch) today.longest_stretch = sample.stretch_minutes;
 
 		_break_interval = sample.break_interval;
 		today.score = compute_score(today, _break_interval);
@@ -163,20 +150,11 @@ public:
 		_records.back().micro_pauses++;
 	}
 
-	bool flush()
-	{
-		return save();
-	}
+	bool flush() { return save(); }
 
-	[[nodiscard]] const std::string& last_storage_error() const
-	{
-		return _last_storage_error;
-	}
+	[[nodiscard]] const std::string& last_storage_error() const { return _last_storage_error; }
 
-	const daily_record& today() const
-	{
-		return _records.back();
-	}
+	const daily_record& today() const { return _records.back(); }
 
 	// False once midnight has passed since the last record was made: today() is then still
 	// the previous day's record until the next tick creates a new one.
@@ -187,10 +165,7 @@ public:
 		return !_records.empty() && std::wcscmp(_records.back().date, today_str) == 0;
 	}
 
-	const std::vector<daily_record>& history() const
-	{
-		return _records;
-	}
+	const std::vector<daily_record>& history() const { return _records; }
 
 	// Score 0-100, measured against the break interval the user actually chose.
 	static int compute_score(const daily_record& r, const int break_interval)
@@ -198,11 +173,9 @@ public:
 		const int limit = break_interval > 0 ? break_interval : 30;
 		int score = 100;
 
-		if (r.longest_stretch > limit)
-			score -= (r.longest_stretch - limit) * 2;
+		if (r.longest_stretch > limit) score -= (r.longest_stretch - limit) * 2;
 
-		if (r.active_minutes > limit && r.break_count == 0)
-			score -= 20;
+		if (r.active_minutes > limit && r.break_count == 0) score -= 20;
 
 		score += std::min(r.break_count * 3, 30);
 
@@ -221,43 +194,35 @@ public:
 		while (field_count < fields.size())
 		{
 			const size_t comma = input.find(',', start);
-			fields[field_count++] = input.substr(start,
-				comma == std::string_view::npos ? input.size() - start : comma - start);
-			if (comma == std::string_view::npos)
-				break;
+			fields[field_count++] = input.substr(start, comma == std::string_view::npos ? input.size() - start
+			                                                                            : comma - start);
+			if (comma == std::string_view::npos) break;
 			start = comma + 1;
 		}
 
-		if (field_count < 9 || fields[0].size() >= 16)
-			return false;
+		if (field_count < 9 || fields[0].size() >= 16) return false;
 
 		char date_buf[16] = {};
 		std::memcpy(date_buf, fields[0].data(), fields[0].size());
-		if (!is_iso_date(date_buf))
-			return false;
+		if (!is_iso_date(date_buf)) return false;
 
 		const auto parse_int = [](std::string_view text, int& value)
 		{
-			while (!text.empty() && (text.back() == '\r' || text.back() == '\n'))
-				text.remove_suffix(1);
-			if (text.empty())
-				return false;
+			while (!text.empty() && (text.back() == '\r' || text.back() == '\n')) text.remove_suffix(1);
+			if (text.empty()) return false;
 			const auto result = std::from_chars(text.data(), text.data() + text.size(), value);
 			return result.ec == std::errc{} && result.ptr == text.data() + text.size();
 		};
 
 		int* values[] = {
 			&r.active_minutes, &r.break_count, &r.longest_stretch, &r.score,
-			&r.keyboard_ticks, &r.mouse_ticks, &r.idle_ticks, &r.locked_ticks,
+			&r.keyboard_ticks, &r.mouse_ticks, &r.idle_ticks,      &r.locked_ticks,
 		};
 		for (size_t i = 0; i < 8; ++i)
-			if (!parse_int(fields[i + 1], *values[i]))
-				return false;
-		if (field_count >= 10 && !parse_int(fields[9], r.micro_pauses))
-			return false;
+			if (!parse_int(fields[i + 1], *values[i])) return false;
+		if (field_count >= 10 && !parse_int(fields[9], r.micro_pauses)) return false;
 
-		for (size_t i = 0; i < fields[0].size(); ++i)
-			r.date[i] = static_cast<wchar_t>(date_buf[i]);
+		for (size_t i = 0; i < fields[0].size(); ++i) r.date[i] = static_cast<wchar_t>(date_buf[i]);
 		return true;
 	}
 
@@ -266,8 +231,7 @@ public:
 		for (int i = 0; i < 10; i++)
 		{
 			const bool dash = i == 4 || i == 7;
-			if (dash ? text[i] != '-' : (text[i] < '0' || text[i] > '9'))
-				return false;
+			if (dash ? text[i] != '-' : (text[i] < '0' || text[i] > '9')) return false;
 		}
 		return text[10] == '\0';
 	}
@@ -285,8 +249,7 @@ private:
 #if defined(_MSC_VER)
 		::localtime_s(&result, &value);
 #else
-		if (const auto* const local = std::localtime(&value))
-			result = *local;
+		if (const auto* const local = std::localtime(&value)) result = *local;
 #endif
 		return result;
 	}
@@ -322,15 +285,13 @@ private:
 
 	void load()
 	{
-		if (_store == nullptr)
-			return;
+		if (_store == nullptr) return;
 
 		std::string contents;
 		const auto result = _store->read_text("history.csv", contents);
 		if (!result)
 		{
-			if (!result.not_found)
-				_last_storage_error = result.diagnostic;
+			if (!result.not_found) _last_storage_error = result.diagnostic;
 			return;
 		}
 
@@ -339,18 +300,15 @@ private:
 		while (line_start <= contents.size())
 		{
 			const size_t line_end = contents.find('\n', line_start);
-			const size_t count = line_end == std::string::npos ? contents.size() - line_start
-			                                                     : line_end - line_start;
+			const size_t count = line_end == std::string::npos ? contents.size() - line_start : line_end - line_start;
 			if (!first && count > 0)
 			{
 				std::string line = contents.substr(line_start, count);
 				daily_record r = {};
-				if (parse_record(line.c_str(), r))
-					_records.push_back(r);
+				if (parse_record(line.c_str(), r)) _records.push_back(r);
 			}
 			first = false;
-			if (line_end == std::string::npos)
-				break;
+			if (line_end == std::string::npos) break;
 			line_start = line_end + 1;
 		}
 
@@ -359,20 +317,18 @@ private:
 
 	bool save() const
 	{
-		if (_store == nullptr)
-			return true;
+		if (_store == nullptr) return true;
 
 		std::ostringstream out;
 		out << "date,active_minutes,break_count,longest_stretch,score,keyboard_ticks,mouse_ticks,"
-		       "idle_ticks,locked_ticks,micro_pauses\n";
+			   "idle_ticks,locked_ticks,micro_pauses\n";
 
 		for (const auto& r : _records)
 		{
 			std::string date;
 			for (const wchar_t c : r.date)
 			{
-				if (c == L'\0')
-					break;
+				if (c == L'\0') break;
 				if (c > 0x7f)
 				{
 					_last_storage_error = "history.csv contains a non-ASCII date";
@@ -381,10 +337,9 @@ private:
 				date += static_cast<char>(c);
 			}
 
-			out << date << ',' << r.active_minutes << ',' << r.break_count << ','
-			    << r.longest_stretch << ',' << r.score << ',' << r.keyboard_ticks << ','
-			    << r.mouse_ticks << ',' << r.idle_ticks << ',' << r.locked_ticks << ','
-			    << r.micro_pauses << '\n';
+			out << date << ',' << r.active_minutes << ',' << r.break_count << ',' << r.longest_stretch << ',' << r.score
+				<< ',' << r.keyboard_ticks << ',' << r.mouse_ticks << ',' << r.idle_ticks << ',' << r.locked_ticks
+				<< ',' << r.micro_pauses << '\n';
 			if (!out)
 			{
 				_last_storage_error = "could not format history.csv";
@@ -424,8 +379,7 @@ public:
 
 	explicit usage_data(activity_store* store) : _store(store)
 	{
-		if (_store != nullptr)
-			load();
+		if (_store != nullptr) load();
 	}
 
 	// Neither loads nor saves, so tests cannot touch the user's usage file.
@@ -436,14 +390,9 @@ public:
 
 	static constexpr transient_t transient{};
 
-	explicit usage_data(transient_t)
-	{
-	}
+	explicit usage_data(transient_t) {}
 
-	~usage_data()
-	{
-		save();
-	}
+	~usage_data() { save(); }
 
 	step_events step(const int64_t mouse, const int64_t keyboard)
 	{
@@ -460,14 +409,11 @@ public:
 		{
 			_now_break += 1;
 
-			if (_now_break == MicroPauseTicks)
-				events.micro_pause = true;
+			if (_now_break == MicroPauseTicks) events.micro_pause = true;
 
-			if (_now_break == ThreeMinutes)
-				events.break_completed = true;
+			if (_now_break == ThreeMinutes) events.break_completed = true;
 
-			if (_now_break >= ThreeMinutes)
-				_last_break = 0;
+			if (_now_break >= ThreeMinutes) _last_break = 0;
 		}
 		else
 		{
@@ -496,8 +442,7 @@ public:
 	step_events age(const int64_t ticks)
 	{
 		step_events events;
-		if (ticks <= 0)
-			return events;
+		if (ticks <= 0) return events;
 
 		const int shift = static_cast<int>(std::min<int64_t>(ticks, MaxUses));
 		std::shift_right(std::begin(_uses), std::end(_uses), shift);
@@ -543,19 +488,14 @@ public:
 
 	int get_last_break_minutes() const { return _last_break / TimerGap; }
 
-	bool is_active() const
-	{
-		return (_uses[0].mouse + _uses[0].keyboard) > 0;
-	}
+	bool is_active() const { return (_uses[0].mouse + _uses[0].keyboard) > 0; }
 
 	// Tray icon urgency level: 0=green, 1=yellow, 2=red
 	int get_urgency_level(const int delay_minutes) const
 	{
 		const int mins_since_break = get_last_break_minutes();
-		if (mins_since_break >= delay_minutes)
-			return 2;
-		if (mins_since_break >= delay_minutes * 3 / 4)
-			return 1;
+		if (mins_since_break >= delay_minutes) return 2;
+		if (mins_since_break >= delay_minutes * 3 / 4) return 1;
 		return 0;
 	}
 
@@ -568,20 +508,13 @@ public:
 	bool should_show_eye_reminder() const
 	{
 		constexpr int TwentyMinutes = 20 * TimerGap;
-		if (_last_break == 0)
-			return false;
+		if (_last_break == 0) return false;
 		return (_last_break % TwentyMinutes) == 0 && is_active();
 	}
 
-	bool flush()
-	{
-		return save();
-	}
+	bool flush() { return save(); }
 
-	[[nodiscard]] const std::string& last_storage_error() const
-	{
-		return _last_storage_error;
-	}
+	[[nodiscard]] const std::string& last_storage_error() const { return _last_storage_error; }
 
 private:
 	static constexpr uint32_t FileVersion = 2;
@@ -601,20 +534,18 @@ private:
 #if defined(_MSC_VER)
 		::localtime_s(&result, &value);
 #else
-		if (const auto* const local = std::localtime(&value))
-			result = *local;
+		if (const auto* const local = std::localtime(&value)) result = *local;
 #endif
 		return result;
 	}
 
 	bool save() const
 	{
-		if (_store == nullptr)
-			return true;
+		if (_store == nullptr) return true;
 
 		std::vector<uint8_t> bytes;
-		bytes.reserve(sizeof(FileVersion) + sizeof(_uses) + sizeof(_break_markers) +
-		              sizeof(_last_break) + sizeof(_now_break));
+		bytes.reserve(sizeof(FileVersion) + sizeof(_uses) + sizeof(_break_markers) + sizeof(_last_break) +
+		              sizeof(_now_break));
 
 		const auto append = [&bytes](const void* data, const size_t size)
 		{
@@ -636,22 +567,19 @@ private:
 
 	void load()
 	{
-		if (_store == nullptr)
-			return;
+		if (_store == nullptr) return;
 
 		std::vector<uint8_t> bytes;
 		const auto result = _store->read_binary("usage.dat", bytes);
 		if (!result)
 		{
-			if (!result.not_found)
-				_last_storage_error = result.diagnostic;
+			if (!result.not_found) _last_storage_error = result.diagnostic;
 			return;
 		}
 
-		const size_t expected = sizeof(FileVersion) + sizeof(_uses) + sizeof(_break_markers) +
-		                        sizeof(_last_break) + sizeof(_now_break);
-		if (bytes.size() < expected)
-			return;
+		const size_t expected = sizeof(FileVersion) + sizeof(_uses) + sizeof(_break_markers) + sizeof(_last_break) +
+		                        sizeof(_now_break);
+		if (bytes.size() < expected) return;
 
 		size_t offset = 0;
 		const auto read = [&bytes, &offset](void* data, const size_t size)
@@ -662,8 +590,7 @@ private:
 
 		uint32_t ver = 0;
 		read(&ver, sizeof(ver));
-		if (ver != FileVersion)
-			return;
+		if (ver != FileVersion) return;
 
 		read(_uses, sizeof(_uses));
 		read(_break_markers, sizeof(_break_markers));
@@ -673,7 +600,6 @@ private:
 		const int64_t away = std::max<int64_t>(0, _store->seconds_since_written("usage.dat"));
 		const step_events gap = age(away / SecondsPerTick);
 		const time_t now = std::time(nullptr);
-		_break_while_closed = gap.break_completed &&
-			same_local_day(now - static_cast<time_t>(away), now);
+		_break_while_closed = gap.break_completed && same_local_day(now - static_cast<time_t>(away), now);
 	}
 };

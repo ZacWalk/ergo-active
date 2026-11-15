@@ -17,7 +17,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /EHsc")
 
-# The application and the static LGPL platform layer use the same CRT.
+# The application and the static platform layer use the same CRT.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 # Develop against a sibling checkout when one exists; a fresh checkout fetches
@@ -31,7 +31,7 @@ endif()
 include(FetchContent)
 FetchContent_Declare(libdesktop
     GIT_REPOSITORY https://github.com/ZacWalk/libdesktop.git
-    GIT_TAG        04109ee82a500db38d439fa281bbc3f43124adfe
+    GIT_TAG        d172a12c6e3df0831a641133b96d073559a99db5
 )
 FetchContent_MakeAvailable(libdesktop)
 
@@ -53,7 +53,7 @@ libdesktop_add_app(ergo-active
 
 target_include_directories(ergo-active PRIVATE src)
 target_link_libraries(ergo-active PRIVATE libdesktop::ui)
-target_compile_options(ergo-active PRIVATE /W3 /MP /EHsc /utf-8)
+target_compile_options(ergo-active PRIVATE /W4 /MP /EHsc /utf-8)
 
 set_target_properties(ergo-active PROPERTIES
     DEBUG_POSTFIX d
@@ -66,26 +66,27 @@ include(CTest)
 if(BUILD_TESTING)
     add_executable(ergo_active_tests tests/smoke.cpp)
     target_compile_features(ergo_active_tests PRIVATE cxx_std_20)
+    target_compile_options(ergo_active_tests PRIVATE /W4)
     add_test(NAME ergo_active_unit COMMAND ergo_active_tests)
-    set_tests_properties(ergo_active_unit PROPERTIES TIMEOUT 30 LABELS ergo-active)
+    set_tests_properties(ergo_active_unit PROPERTIES TIMEOUT 30 LABELS "ergo-active;headless")
 
     add_executable(ergo_active_usage_tests tests/usage.cpp)
     target_compile_features(ergo_active_usage_tests PRIVATE cxx_std_20)
     target_include_directories(ergo_active_usage_tests PRIVATE src)
-    target_compile_options(ergo_active_usage_tests PRIVATE /W3 /EHsc /utf-8)
+    target_compile_options(ergo_active_usage_tests PRIVATE /W4 /EHsc /utf-8)
     add_test(NAME ergo_active_usage COMMAND ergo_active_usage_tests)
-    set_tests_properties(ergo_active_usage PROPERTIES TIMEOUT 30 LABELS ergo-active)
+    set_tests_properties(ergo_active_usage PROPERTIES TIMEOUT 30 LABELS "ergo-active;headless")
 
     add_executable(ergo_active_dashboard_tests tests/dashboard.cpp)
     target_compile_features(ergo_active_dashboard_tests PRIVATE cxx_std_20)
     target_include_directories(ergo_active_dashboard_tests PRIVATE src)
     target_compile_definitions(ergo_active_dashboard_tests PRIVATE ERGO_ACTIVE_TESTS)
     target_link_libraries(ergo_active_dashboard_tests PRIVATE libdesktop::ui)
-    target_compile_options(ergo_active_dashboard_tests PRIVATE /W3 /EHsc /utf-8)
+    target_compile_options(ergo_active_dashboard_tests PRIVATE /W4 /EHsc /utf-8)
     add_test(NAME ergo_active_dashboard COMMAND ergo_active_dashboard_tests)
-    set_tests_properties(ergo_active_dashboard PROPERTIES TIMEOUT 30 LABELS ergo-active)
+    set_tests_properties(ergo_active_dashboard PROPERTIES TIMEOUT 30 LABELS "ergo-active;headless")
 
     add_test(NAME ergo_active_manifest COMMAND "${CMAKE_COMMAND}"
         "-DEXE=$<TARGET_FILE:ergo-active>" -P "${PROJECT_SOURCE_DIR}/tests/manifest.cmake")
-    set_tests_properties(ergo_active_manifest PROPERTIES TIMEOUT 30 LABELS ergo-active)
+    set_tests_properties(ergo_active_manifest PROPERTIES TIMEOUT 30 LABELS "ergo-active;headless")
 endif()

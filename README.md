@@ -6,12 +6,7 @@ ergo-active is a small Windows x64 break reminder. It monitors keyboard and
 mouse activity, keeps a rolling activity window, runs from the system tray, and
 reminds you to take regular breaks.
 
-The application is a libdesktop `ui::app`, and its dashboard is a
-`ui::element_host`. Its element tree contains the drawn menu bar, custom
-dashboard canvas, shared slider and numeric edit control. The canvas draws
-stat cards, a four-hour activity graph and usage pie chart through
-`render::draw_context`; platform services own the tray, settings, clipboard,
-persistence and single-instance signaling.
+![ergo-active dashboard](screen-shot.png)
 
 ## Features
 
@@ -20,18 +15,18 @@ persistence and single-instance signaling.
 - **Break reminders** — configurable 20–120 minute interval, green/yellow/red
   tray urgency, rotating posture tips and the 20-20-20 eye rule. Overdue break
   warnings always win over the eye reminder.
-- **Dashboard** — dark stat cards, keyboard/mouse/break activity graph, daily
-  usage pie chart, DPI-aware slider and numeric edit control with keyboard focus.
+- **Dashboard** — dark stat cards, a four-hour keyboard/mouse/break activity
+  graph, a daily usage pie chart, and a DPI-aware slider and numeric editor for
+  the break interval.
 - **Daily history** — up to 30 days in
   `%APPDATA%\ergo-active\history.csv`; the rolling window survives restarts in
-  `%APPDATA%\ergo-active\usage.dat`. Missed timer periods, application gaps,
-  and sleep age as time away.
-- **System tray** — dynamic urgency icons, live tooltip, balloon tips,
-  keyboard-selection/context-menu anchor, `TaskbarCreated` recovery and
-  single-instance show behavior.
-- **Persistence diagnostics** — failed history/usage publication and tray
-  publication are returned through testable seams and logged by the app instead
-  of being silently discarded.
+  `%APPDATA%\ergo-active\usage.dat`. Time the app was closed or the machine
+  slept counts as time away.
+- **System tray** — urgency icons, a live tooltip, balloon tips, a context menu
+  that also opens from the keyboard, and recovery when Explorer restarts.
+  Starting a second copy shows the running dashboard instead.
+- **Failure reporting** — a history, usage or tray update that fails is logged,
+  not silently discarded.
 
 ## Building
 
@@ -40,24 +35,40 @@ vendored [dd](https://github.com/ZacWalk/dd) runtime locates Visual Studio,
 CMake and Ninja.
 
 ```powershell
-$env:CMAKE_BUILD_PARALLEL_LEVEL = 2
 .\dd.ps1 build                    # Debug and Release
 .\dd.ps1 test --label ergo-active # headless tests only
+.\dd.ps1 test --label headless    # the same no-visible-UI gate, with console check counts
 ```
 
-The executable is `exe\ergo-active-64.exe` (Debug adds `d`). The application
-links the four libdesktop libraries through `libdesktop::ui`; the sibling
-`..\libdesktop` checkout is used for local development.
+The executable is `exe\ergo-active-64.exe` (Debug adds `d`). It links
+[libdesktop](https://github.com/ZacWalk/libdesktop) at its pinned revision, or
+a sibling `..\libdesktop` checkout when one exists.
 
-The labelled tests cover the smoke target, rolling window/history persistence
-and failure reporting, headless dashboard layout/rendering/input/reminder
-policy, shared tray and atomic-file publication failure, and the generated
-PerMonitorV2 manifest. They do not open the visible dashboard or attach to a
-running user instance.
+The labelled tests cover the rolling window, history persistence and failure
+reporting, the dashboard's layout, rendering, input, flushing and reminder
+policy, and the embedded PerMonitorV2 manifest, without opening a window. An
+unfiltered `.\dd.ps1 test` also starts the app to check that its window
+appears. Do not use that unfiltered command for unattended verification: a
+second instance can signal the user's running reminder to show itself.
+
+Both labels expose passing output and the behavioural suites' real check
+counts. After building, `ctest --preset debug -L headless -V --no-tests=error`
+reruns without rebuilding; use `release` for Release. Neither labelled gate
+launches the reminder.
+
+### Icons
+
+`python tools\generate_icon.py` regenerates the running-figure icon in
+`src\res\ergo-active.ico`, in nine desktop sizes. Add `--check` to verify
+without writing, or `--output tmp\icon-128.png --size 128` for another size.
+`--variant tray-green` (also `tray-amber` and `tray-red`) with `--output` exports
+the check-and-disc tray motif; the live tray keeps its urgency and recovery policy.
+Only Python 3.9+'s standard library and the vendored `tools\iconlib.py` are needed.
 
 ## License
 
-[CC0 1.0 Universal](LICENSE) — public domain. The executable statically links
-the LGPL-2.1-or-later [libdesktop](https://github.com/ZacWalk/libdesktop)
-platform layer; its source and pinned recipe remain available so users can
-relink against a modified library.
+[MIT](LICENSE). The executable includes
+[libdesktop](https://github.com/ZacWalk/libdesktop), which is licensed under the
+Mozilla Public License 2.0: anyone distributing the executable must tell its
+recipients where to get libdesktop's source code, including any changes made to
+it. `tools/iconlib.py` is vendored from libdesktop under the same licence.

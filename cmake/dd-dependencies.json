@@ -3,7 +3,7 @@
   "dependencies": {
     "libdesktop": {
       "url": "https://github.com/ZacWalk/libdesktop.git",
-      "commit": "04109ee82a500db38d439fa281bbc3f43124adfe",
+      "commit": "d172a12c6e3df0831a641133b96d073559a99db5",
       "method": "application"
     }
   }

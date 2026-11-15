@@ -27,3 +27,4 @@ build/
 exe/
 intermediate/
 /.dd/state/
+/tmp/

@@ -1,83 +1,57 @@
-# ergo-active – Copilot Workspace Overview
+# ergo-active – agent instructions
 
-ergo-active is a native Windows C++20 break reminder built on libdesktop's
-`core`, `platform`, `render` and `ui` libraries. It monitors keyboard and mouse
-activity, keeps the dashboard in the notification area, and reminds the user
-to take regular breaks.
+ergo-active is a Windows break reminder built on libdesktop's `core`,
+`platform`, `render` and `ui` libraries. [README.md](README.md) describes what
+it does and how to build it.
 
-## Project
+## Build and test
 
-| Project | Output | Purpose |
-|---------|--------|---------|
-| `CMakeLists.txt` | `exe/ergo-active-64[d].exe` | Main GUI application |
+- Build and test with `CMAKE_BUILD_PARALLEL_LEVEL=2`, through
+  `.\dd.ps1 test --label ergo-active`. Never run an unfiltered `.\dd.ps1 test`
+  or launch the app: both start the dashboard, and a second instance signals
+  the user's running one to show itself.
+- `dd.ps1` and `.dd/` are vendored [dd](https://github.com/ZacWalk/dd), with
+  their hashes in [docs/dd-upstream.json](docs/dd-upstream.json); do not edit
+  them. Project settings belong in `dd.psd1`.
+- libdesktop is pinned twice, by the `GIT_TAG` in `CMakeLists.txt` and in
+  `cmake/dd-dependencies.json`; keep the two equal. A sibling `..\libdesktop`
+  checkout is used instead when present.
+- Every target builds at `/W4` with no warnings, and `.clang-tidy` names the
+  bug-finding and performance checks the code is kept clean against; a
+  deliberate exception is a `// NOLINT(check): reason` on its line.
+- `.clang-format` is the layout (tabs, Allman braces, 120 columns).
+  `.\dd.ps1 fmt` applies it to `include`, `src` and `tests` only, given
+  clang-format on PATH (Visual Studio installs one in `VC\Tools\Llvm\x64\bin`).
 
-`cmake/dd-dependencies.json` records the libdesktop revision used by the
-sibling checkout or fetched dependency. CMake declares the application with
-`libdesktop_add_app` and links `libdesktop::ui`.
+## Layers
 
-## Key Source Files
+Each source file in `src/` belongs to one layer:
 
-### Data layer
-- **data.h** – Platform-neutral `daily_stats` and `usage_data`. The model keeps
-  the existing `%APPDATA%\ergo-active\history.csv` and `usage.dat` formats,
-  rolling-window aging, micro-pauses, break detection, scoring, and save
-  cadence through the small `activity_store` contract.
-- **dashboard-layout.h** and **dashboard-policy.h** – Headless layout,
-  numeric delay-editor, input classification, timer-aging, urgency, and
-  reminder policy seams.
+- `data.h`, `dashboard-layout.h`, `dashboard-policy.h`, `app-services.h` – the
+  platform-neutral activity model and file formats, control layout, reminder
+  policy, and the service contracts the dashboard talks to.
+- `ui-frame.h`, `main.cpp` – the dashboard's menus, content and logic, and the
+  application lifecycle on libdesktop's `ui::shell`.
+- `desktop-services.h` – adapters from those contracts to libdesktop's
+  app-data, file, settings, clipboard and tray services.
+- `win-services.h` – the only Windows code: `GetLastInputInfo` and session
+  state. No other file includes a Windows header.
 
-### UI layer
-- **ui-frame.h** – `main_frame`, a `ui::element_host` for the application frame.
-  Its element tree contains the drawn menu bar, dashboard canvas, `ui::trackbar`
-  and `ui::edit`; charts and stat cards paint through `render::draw_context`.
-  The frame owns no native window or Win32 drawing handle.
-- **app-services.h** – Neutral activity, session, settings and tray contracts
-  used by the model/presentation boundary.
-- **desktop-services.h** – Thin adapters over libdesktop's roaming app-data,
-  atomic file publication, settings, clipboard and tray services.
-- **win-services.h** – The explicit Windows monitoring adapter only:
-  `GetLastInputInfo`, locked-desktop polling, and session state. It contains no
-  tray, window, registry or file implementation.
+Generic GUI, tray, settings and file behavior belongs in libdesktop, not here.
 
-### Infrastructure
-- **main.cpp** – Owns `main`, defines the `ui::app` lifecycle, single-instance
-  signaling, frame creation, frame ticks and teardown, and `platform::run` drives
-  the lifecycle. `libdesktop_add_app` supplies the manifest, icon and version
-  resources.
-- **res/ergo-active.ico** – The application icon supplied to CMake.
+## Rules
 
-## Build
-
-- Built with CMake/Ninja through the vendored dd driver (`dd.ps1`,
-  PowerShell 7.4+), which sets up MSVC.
-- `\.\dd.ps1 build` builds both configurations.
-- `\.\dd.ps1 test --label ergo-active` builds both configurations and runs the
-  headless model, persistence, dashboard/render-policy and manifest checks. No
-  test opens the dashboard or launches the visible app.
-- Keep `CMAKE_BUILD_PARALLEL_LEVEL=2` for focused verification. Do not launch
-  the dashboard or disturb a running user instance while building/testing.
-
-## Conventions and preserved behavior
-
-- Keep the dashboard charts, stat cards, slider, numeric editor, keyboard
-  focus behavior, menus, tray policy and reminders; do not replace them with a
-  generic list or placeholder.
-- `dashboard_layout::measure()` is the single source of control geometry and
-  runs from the ui frame host's layout callback and DPI-change layout.
-- The app samples `GetLastInputInfo` every ten seconds through the isolated
-  Windows adapter. A locked session is away from the keyboard.
-- Breaks and micro-pauses are detected by `usage_data::step()` and reported to
-  `daily_stats` through `step_events`, never inferred from a notification.
-- Usage data ages missed timer periods as idle ticks, including restart and
-  sleep gaps. Breaks completed in a gap count only when the gap began today.
-- Usage/history flushes every five minutes, on end-session, on exit and during
-  teardown. The 20-20-20 reminder yields to an overdue break warning.
-- Tray urgency remains green → yellow → red; tooltip updates, balloon tips,
-  keyboard selection/context-menu anchor and `TaskbarCreated` recovery remain
-  platform-service responsibilities.
-- `platform::try_lock_named_instance("Local\\ergo-active-single-instance")`
-  preserves the existing mutex identity. A second process sends the registered
-  `ergo-active-show-window` signal and exits; it does not use window heuristics.
-- The neutral data/presentation files must not include Windows headers. Generic
-  GUI, tray, settings and file behavior belongs in libdesktop; only domain
-  activity/session observation belongs in `win-services.h` behind a contract.
+- Keep the dashboard's charts, stat cards, slider, numeric editor, keyboard
+  focus, menus, tray policy and reminders; never replace them with a generic
+  list or a placeholder.
+- `dashboard_layout::measure()`, called from `main_frame::layout_content`, is
+  the only source of control geometry.
+- `usage_data::step()` detects breaks and micro-pauses and reports them to
+  `daily_stats` through `step_events`; never infer one from a notification.
+- `usage_data::age()` counts missed timer periods, restarts and sleep included,
+  as idle. A break completed in a gap counts only when the gap began today.
+- Usage and history flush every five minutes, at session end, on exit and in
+  teardown.
+- The instance lock is `Local\ergo-active-single-instance`. A second process
+  sends the `ergo-active-show-window` signal and exits; never find the running
+  instance by its window.

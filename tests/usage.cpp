@@ -11,44 +11,36 @@ namespace
 	class memory_store final : public activity_store
 	{
 	public:
-		activity_store_read_result read_text(const std::string_view name,
-		                                     std::string& value) const override
+		activity_store_read_result read_text(const std::string_view name, std::string& value) const override
 		{
-			if (fail_reads)
-				return {false, false, "test read failure"};
+			if (fail_reads) return {false, false, "test read failure"};
 			const auto found = text.find(std::string(name));
-			if (found == text.end())
-				return {false, true, {}};
+			if (found == text.end()) return {false, true, {}};
 			value = found->second;
 			return {};
 		}
 
 		activity_store_result write_text_atomic(const std::string_view name,
-		                                       const std::string_view value) const override
+		                                        const std::string_view value) const override
 		{
-			if (fail_writes)
-				return {false, "test publication failure"};
+			if (fail_writes) return {false, "test publication failure"};
 			text[std::string(name)] = std::string(value);
 			return {};
 		}
 
-		activity_store_read_result read_binary(const std::string_view name,
-		                                       std::vector<uint8_t>& value) const override
+		activity_store_read_result read_binary(const std::string_view name, std::vector<uint8_t>& value) const override
 		{
-			if (fail_reads)
-				return {false, false, "test read failure"};
+			if (fail_reads) return {false, false, "test read failure"};
 			const auto found = binary.find(std::string(name));
-			if (found == binary.end())
-				return {false, true, {}};
+			if (found == binary.end()) return {false, true, {}};
 			value = found->second;
 			return {};
 		}
 
 		activity_store_result write_binary_atomic(const std::string_view name,
-		                                         const std::span<const uint8_t> value) const override
+		                                          const std::span<const uint8_t> value) const override
 		{
-			if (fail_writes)
-				return {false, "test publication failure"};
+			if (fail_writes) return {false, "test publication failure"};
 			binary[std::string(name)] = {value.begin(), value.end()};
 			return {};
 		}
@@ -77,8 +69,7 @@ namespace
 
 	void work(usage_data& usage, const int minutes)
 	{
-		for (int i = 0; i < minutes * TicksPerMinute; ++i)
-			usage.step(1, 0);
+		for (int i = 0; i < minutes * TicksPerMinute; ++i) usage.step(1, 0);
 	}
 
 	void test_gaps_count_as_time_away()
@@ -112,8 +103,7 @@ namespace
 		usage.age(2 * TicksPerMinute);
 
 		bool completed = false;
-		for (int i = 0; i < TicksPerMinute && !completed; ++i)
-			completed = usage.step(0, 0).break_completed;
+		for (int i = 0; i < TicksPerMinute && !completed; ++i) completed = usage.step(0, 0).break_completed;
 		check(completed, "it completes once the idle run reaches three minutes");
 		check(usage.get_last_break_minutes() == 0, "and resets the stretch");
 	}
@@ -184,8 +174,8 @@ namespace
 		std::printf("history.csv rows\n");
 
 		daily_record r = {};
-		check(daily_stats::parse_record("2026-10-02,10,1,5,100,1,2,3,4,5\n", r) &&
-		      wcscmp(r.date, L"2026-10-02") == 0 && r.active_minutes == 10 && r.micro_pauses == 5,
+		check(daily_stats::parse_record("2026-10-02,10,1,5,100,1,2,3,4,5\n", r) && wcscmp(r.date, L"2026-10-02") == 0 &&
+		          r.active_minutes == 10 && r.micro_pauses == 5,
 		      "a row this version writes is read back");
 
 		r = {};
@@ -194,7 +184,15 @@ namespace
 
 		// A date save() could not write back would fail every later save of the file.
 		r = {};
-		check(!daily_stats::parse_record("\xC3\xBC" "n" "\xC3\xAF" "c" "\xC3\xB6" "d" "\xC3\xA9" ",1,2,3,4,5,6,7,8,9\n", r),
+		check(!daily_stats::parse_record("\xC3\xBC"
+		                                 "n"
+		                                 "\xC3\xAF"
+		                                 "c"
+		                                 "\xC3\xB6"
+		                                 "d"
+		                                 "\xC3\xA9"
+		                                 ",1,2,3,4,5,6,7,8,9\n",
+		                                 r),
 		      "a row with a non-ASCII date is skipped");
 
 		const char* damaged[] = {
@@ -229,8 +227,7 @@ namespace
 		}
 
 		usage_data usage(&store);
-		check(usage.get_last_break_minutes() == 5,
-		      "the rolling activity window survives a storage round trip");
+		check(usage.get_last_break_minutes() == 5, "the rolling activity window survives a storage round trip");
 		daily_stats stats(&store);
 		check(stats.today().active_minutes == 1 && stats.today().keyboard_ticks == TicksPerMinute,
 		      "daily statistics survive a storage round trip");
@@ -262,7 +259,6 @@ int main()
 	test_history_rows();
 	test_storage_round_trip();
 
-	std::printf("\n%s (%d checks)\n",
-	            failures == 0 ? "all checks passed" : "there were failures", checks);
+	std::printf("\n%s (%d checks)\n", failures == 0 ? "all checks passed" : "there were failures", checks);
 	return failures == 0 ? 0 : 1;
 }

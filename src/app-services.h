@@ -57,14 +57,11 @@ struct tray_service
 {
 	virtual ~tray_service() = default;
 
-	virtual bool install(std::function<void()> restore,
-	                     std::function<void(core::pointi, bool)> context_menu,
+	virtual bool install(std::function<void()> restore, std::function<void(core::pointi, bool)> context_menu,
 	                     std::function<void()> end_session) = 0;
 	virtual void uninstall() = 0;
 	virtual void update_urgency(int level) = 0;
 	virtual void update_tooltip(std::string_view text) = 0;
-	virtual void show_balloon(std::string_view title,
-	                          std::string_view message,
-	                          std::string_view tip) = 0;
+	virtual void show_balloon(std::string_view title, std::string_view message, std::string_view tip) = 0;
 	virtual std::string diagnostics() const = 0;
 };

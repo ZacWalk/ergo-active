@@ -13,8 +13,8 @@
 class delay_control
 {
 public:
-	delay_control(const int minimum, const int maximum, const int initial)
-		: _minimum(minimum), _maximum(std::max(minimum, maximum)), _value(initial)
+	delay_control(const int minimum, const int maximum, const int initial) :
+		_minimum(minimum), _maximum(std::max(minimum, maximum)), _value(initial)
 	{
 		set_value(initial);
 	}
@@ -28,10 +28,7 @@ public:
 		_text = std::to_string(_value);
 	}
 
-	void nudge(const int delta)
-	{
-		set_value(_value + delta);
-	}
+	void nudge(const int delta) { set_value(_value + delta); }
 
 	// Mirrors the old edit control: the accepted slider value is clamped
 	// immediately, while the literal text remains until focus is lost.
@@ -42,14 +39,10 @@ public:
 		const auto result = std::from_chars(text.data(), text.data() + text.size(), parsed);
 		if (result.ec == std::errc{} && result.ptr == text.data() + text.size())
 			_value = std::clamp(parsed, _minimum, _maximum);
-		else
-			_value = _minimum;
+		else _value = _minimum;
 	}
 
-	void commit()
-	{
-		_text = std::to_string(_value);
-	}
+	void commit() { _text = std::to_string(_value); }
 
 private:
 	int _minimum;
@@ -65,33 +58,25 @@ enum class reminder_kind
 	eye_strain,
 };
 
-inline reminder_kind choose_reminder(const bool can_show,
-                                     const int last_break_minutes,
-                                     const int delay_minutes,
+inline reminder_kind choose_reminder(const bool can_show, const int last_break_minutes, const int delay_minutes,
                                      const bool eye_due)
 {
-	if (!can_show)
-		return reminder_kind::none;
-	if (last_break_minutes > delay_minutes)
-		return reminder_kind::break_warning;
-	if (eye_due)
-		return reminder_kind::eye_strain;
+	if (!can_show) return reminder_kind::none;
+	if (last_break_minutes > delay_minutes) return reminder_kind::break_warning;
+	if (eye_due) return reminder_kind::eye_strain;
 	return reminder_kind::none;
 }
 
 inline int urgency_level(const int last_break_minutes, const int delay_minutes)
 {
-	if (last_break_minutes >= delay_minutes)
-		return 2;
-	if (last_break_minutes >= delay_minutes * 3 / 4)
-		return 1;
+	if (last_break_minutes >= delay_minutes) return 2;
+	if (last_break_minutes >= delay_minutes * 3 / 4) return 1;
 	return 0;
 }
 
 inline uint64_t elapsed_periods(const double now, const double previous, const double period)
 {
-	if (!(period > 0.0) || now <= previous)
-		return 0;
+	if (!(period > 0.0) || now <= previous) return 0;
 	return static_cast<uint64_t>(std::floor((now - previous) / period));
 }
 
@@ -101,12 +86,9 @@ struct input_policy_result
 	int64_t keyboard = 0;
 };
 
-inline input_policy_result classify_input(const bool last_input_changed,
-                                          const bool cursor_moved,
-                                          const bool cursor_query_succeeded,
-                                          const bool locked)
+inline input_policy_result classify_input(const bool last_input_changed, const bool cursor_moved,
+                                          const bool cursor_query_succeeded, const bool locked)
 {
-	if (!last_input_changed || !cursor_query_succeeded || locked)
-		return {};
+	if (!last_input_changed || !cursor_query_succeeded || locked) return {};
 	return cursor_moved ? input_policy_result{1, 0} : input_policy_result{0, 1};
 }
